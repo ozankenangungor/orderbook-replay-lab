@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+  "core",
+  "codec",
+  "orderbook",
+  "replay",
+  "metrics",
+  "cli",
+]
