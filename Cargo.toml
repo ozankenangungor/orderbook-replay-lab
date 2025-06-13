@@ -8,3 +8,6 @@ members = [
   "metrics",
   "cli",
 ]
+
+[workspace.dependencies]
+thiserror = "1.0"
