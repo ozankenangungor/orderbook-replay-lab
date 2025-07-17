@@ -3,4 +3,17 @@ name = "cli"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "rust-latency-lob"
+path = "src/main.rs"
+
 [dependencies]
+clap = { workspace = true }
+lob_core = { package = "core", path = "../core" }
+metrics = { path = "../metrics" }
+orderbook = { path = "../orderbook" }
+replay = { path = "../replay" }
+
+[dev-dependencies]
+codec = { path = "../codec" }
+tempfile = { workspace = true }
