@@ -64,6 +64,10 @@ impl OrderBook {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+
     use super::*;
     use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
 
@@ -183,5 +187,69 @@ mod tests {
         let (bid, _) = book.best_bid().unwrap();
         let (ask, _) = book.best_ask().unwrap();
         assert!(bid.ticks() < ask.ticks());
+    }
+
+    fn update_strategy() -> impl Strategy<Value = (bool, i64, i64)> {
+        any::<bool>().prop_flat_map(|is_bid| {
+            // Keep bid/ask price ranges disjoint so the strict invariant holds.
+            let price_range = if is_bid { 1i64..=99 } else { 101i64..=200 };
+            (Just(is_bid), price_range, 0i64..=5)
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 64,
+            max_shrink_iters: 256,
+            .. ProptestConfig::default()
+        })]
+
+        #[test]
+        fn prop_best_levels_follow_updates(
+            updates in proptest::collection::vec(update_strategy(), 0..=128),
+        ) {
+            let symbol = Symbol::new("PROP-USD").unwrap();
+            let mut book = OrderBook::new(symbol.clone());
+            let mut bids: BTreeMap<i64, i64> = BTreeMap::new();
+            let mut asks: BTreeMap<i64, i64> = BTreeMap::new();
+
+            for (is_bid, price_ticks, qty_lots) in updates {
+                let side = if is_bid { Side::Bid } else { Side::Ask };
+                let update = LevelUpdate {
+                    side,
+                    price: Price::new(price_ticks).unwrap(),
+                    qty: Qty::new(qty_lots).unwrap(),
+                };
+                book.apply(&MarketEvent::L2Delta {
+                    ts_ns: 1,
+                    symbol: symbol.clone(),
+                    updates: vec![update],
+                });
+
+                let book_side = if is_bid { &mut bids } else { &mut asks };
+                if qty_lots == 0 {
+                    book_side.remove(&price_ticks);
+                } else {
+                    book_side.insert(price_ticks, qty_lots);
+                }
+            }
+
+            let ref_best_bid = bids.iter().next_back().map(|(p, q)| (*p, *q));
+            let ref_best_ask = asks.iter().next().map(|(p, q)| (*p, *q));
+
+            let best_bid = book
+                .best_bid()
+                .map(|(price, qty)| (price.ticks(), qty.lots()));
+            let best_ask = book
+                .best_ask()
+                .map(|(price, qty)| (price.ticks(), qty.lots()));
+
+            prop_assert_eq!(best_bid, ref_best_bid);
+            prop_assert_eq!(best_ask, ref_best_ask);
+
+            if let (Some((bid, _)), Some((ask, _))) = (best_bid, best_ask) {
+                prop_assert!(bid < ask);
+            }
+        }
     }
 }
