@@ -7,4 +7,10 @@ edition = "2021"
 lob_core = { package = "core", path = "../core" }
 
 [dev-dependencies]
+criterion = { workspace = true }
+rand = { workspace = true }
 proptest = "1.4"
+
+[[bench]]
+name = "orderbook_bench"
+harness = false
