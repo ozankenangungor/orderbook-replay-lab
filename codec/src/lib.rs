@@ -15,11 +15,12 @@ pub fn encode_event_json_line(event: &MarketEvent) -> String {
 }
 
 pub fn decode_event_json_line(line: &str) -> Result<MarketEvent, CodecError> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.is_empty() {
         return Err(CodecError::EmptyLine);
     }
-    Ok(serde_json::from_str(trimmed)?)
+    Ok(serde_json::from_str(line)?)
 }
 
 #[cfg(test)]
