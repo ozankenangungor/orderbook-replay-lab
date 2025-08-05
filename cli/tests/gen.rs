@@ -10,7 +10,7 @@ fn gen_is_deterministic_and_replayable() {
     let first = dir.path().join("first.log");
     let second = dir.path().join("second.log");
 
-    let exe = env!("CARGO_BIN_EXE_rust-latency-lob");
+    let exe = env!("CARGO_BIN_EXE_orderbook-replay-lab-rs");
     for path in [&first, &second] {
         let output = Command::new(exe)
             .args([
@@ -33,7 +33,7 @@ fn gen_is_deterministic_and_replayable() {
 
     let mut reader = ReplayReader::open(&first).expect("open replay");
     let mut count = 0u64;
-    while let Some(_) = reader.next_event().expect("read event") {
+    while reader.next_event().expect("read event").is_some() {
         count += 1;
     }
     assert_eq!(count, 5);

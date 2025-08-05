@@ -13,7 +13,11 @@ use replay::ReplayReader;
 const GEN_SEED: u64 = 42;
 
 #[derive(Parser)]
-#[command(name = "rust-latency-lob", version, about = "Low-latency LOB tools")]
+#[command(
+    name = "orderbook-replay-lab-rs",
+    version,
+    about = "Low-latency LOB tools"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
