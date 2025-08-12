@@ -18,25 +18,28 @@ impl OrderBook {
         }
     }
 
-    pub fn apply(&mut self, delta: &MarketEvent) {
-        let MarketEvent::L2Delta {
-            symbol, updates, ..
-        } = delta;
+    pub fn apply(&mut self, event: &MarketEvent) -> bool {
+        match event {
+            MarketEvent::L2Delta {
+                symbol, updates, ..
+            } => {
+                if symbol != &self.symbol {
+                    return false;
+                }
 
-        if symbol != &self.symbol {
-            return;
-        }
+                for update in updates {
+                    let book = match update.side {
+                        Side::Bid => &mut self.bids,
+                        Side::Ask => &mut self.asks,
+                    };
 
-        for update in updates {
-            let book = match update.side {
-                Side::Bid => &mut self.bids,
-                Side::Ask => &mut self.asks,
-            };
-
-            if update.qty.is_zero() {
-                book.remove(&update.price);
-            } else {
-                book.insert(update.price, update.qty);
+                    if update.qty.is_zero() {
+                        book.remove(&update.price);
+                    } else {
+                        book.insert(update.price, update.qty);
+                    }
+                }
+                true
             }
         }
     }
@@ -84,40 +87,40 @@ mod tests {
         let symbol = Symbol::new("BTC-USD").unwrap();
         let mut book = OrderBook::new(symbol.clone());
 
-        book.apply(&delta(
+        assert!(book.apply(&delta(
             &symbol,
             vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
                 qty: Qty::new(1).unwrap(),
             }],
-        ));
+        )));
         assert_eq!(
             book.best_bid(),
             Some((Price::new(100).unwrap(), Qty::new(1).unwrap()))
         );
 
-        book.apply(&delta(
+        assert!(book.apply(&delta(
             &symbol,
             vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
                 qty: Qty::new(5).unwrap(),
             }],
-        ));
+        )));
         assert_eq!(
             book.best_bid(),
             Some((Price::new(100).unwrap(), Qty::new(5).unwrap()))
         );
 
-        book.apply(&delta(
+        assert!(book.apply(&delta(
             &symbol,
             vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
                 qty: Qty::new(0).unwrap(),
             }],
-        ));
+        )));
         assert_eq!(book.best_bid(), None);
     }
 
@@ -126,7 +129,7 @@ mod tests {
         let symbol = Symbol::new("ETH-USD").unwrap();
         let mut book = OrderBook::new(symbol.clone());
 
-        book.apply(&delta(
+        assert!(book.apply(&delta(
             &symbol,
             vec![
                 LevelUpdate {
@@ -150,7 +153,7 @@ mod tests {
                     qty: Qty::new(4).unwrap(),
                 },
             ],
-        ));
+        )));
 
         assert_eq!(
             book.best_bid(),
@@ -168,7 +171,7 @@ mod tests {
         let symbol = Symbol::new("SOL-USD").unwrap();
         let mut book = OrderBook::new(symbol.clone());
 
-        book.apply(&delta(
+        assert!(book.apply(&delta(
             &symbol,
             vec![
                 LevelUpdate {
@@ -182,7 +185,7 @@ mod tests {
                     qty: Qty::new(1).unwrap(),
                 },
             ],
-        ));
+        )));
 
         let (bid, _) = book.best_bid().unwrap();
         let (ask, _) = book.best_ask().unwrap();
@@ -220,11 +223,12 @@ mod tests {
                     price: Price::new(price_ticks).unwrap(),
                     qty: Qty::new(qty_lots).unwrap(),
                 };
-                book.apply(&MarketEvent::L2Delta {
+                let applied = book.apply(&MarketEvent::L2Delta {
                     ts_ns: 1,
                     symbol: symbol.clone(),
                     updates: vec![update],
                 });
+                prop_assert!(applied);
 
                 let book_side = if is_bid { &mut bids } else { &mut asks };
                 if qty_lots == 0 {
