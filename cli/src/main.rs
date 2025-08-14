@@ -10,7 +10,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use replay::ReplayReader;
 
-const GEN_SEED: u64 = 42;
+const GEN_SEED_DEFAULT: u64 = 42;
 
 #[derive(Parser)]
 #[command(
@@ -40,6 +40,8 @@ enum Commands {
         symbol: String,
         #[arg(long)]
         events: u64,
+        #[arg(long, default_value_t = GEN_SEED_DEFAULT)]
+        seed: u64,
     },
 }
 
@@ -62,7 +64,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output,
             symbol,
             events,
-        } => run_gen(&output, &symbol, events),
+            seed,
+        } => run_gen(&output, &symbol, events, seed),
     }
 }
 
@@ -130,11 +133,16 @@ fn run_replay(
     Ok(())
 }
 
-fn run_gen(output: &Path, symbol: &str, events: u64) -> Result<(), Box<dyn std::error::Error>> {
+fn run_gen(
+    output: &Path,
+    symbol: &str,
+    events: u64,
+    seed: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
     let symbol = Symbol::new(symbol)?;
     let file = std::fs::File::create(output)?;
     let mut writer = BufWriter::new(file);
-    let mut rng = StdRng::seed_from_u64(GEN_SEED);
+    let mut rng = StdRng::seed_from_u64(seed);
     let mut mid: i64 = 100_000;
 
     for idx in 0..events {
