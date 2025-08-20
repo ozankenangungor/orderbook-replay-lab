@@ -46,6 +46,26 @@ mod tests {
     }
 
     #[test]
+    fn round_trip_json_line_snapshot() {
+        let event = MarketEvent::L2Snapshot {
+            ts_ns: 7,
+            symbol: Symbol::new("ETH-USD").unwrap(),
+            bids: vec![
+                (Price::new(100).unwrap(), Qty::new(2).unwrap()),
+                (Price::new(99).unwrap(), Qty::new(1).unwrap()),
+            ],
+            asks: vec![
+                (Price::new(101).unwrap(), Qty::new(3).unwrap()),
+                (Price::new(102).unwrap(), Qty::new(4).unwrap()),
+            ],
+        };
+
+        let line = encode_event_json_line(&event);
+        let decoded = decode_event_json_line(&line).unwrap();
+        assert_eq!(decoded, event);
+    }
+
+    #[test]
     fn invalid_line_returns_error() {
         assert!(decode_event_json_line("").is_err());
         assert!(decode_event_json_line("{not-json}").is_err());

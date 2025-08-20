@@ -100,7 +100,8 @@ fn replay_command_processes_events() {
     assert!(stdout.contains("total_events_read=6"));
     assert!(stdout.contains("events_applied=5"));
     assert!(stdout.contains("events_dropped=1"));
-    assert!(stdout.contains("throughput="));
+    assert!(stdout.contains("throughput_windowed="));
+    assert!(stdout.contains("throughput_overall="));
     assert!(stdout.contains("latency="));
     assert!(stdout.contains("best_bid=102@1"));
     assert!(stdout.contains("best_ask=103@2"));
