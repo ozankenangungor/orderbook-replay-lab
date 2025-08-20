@@ -7,6 +7,12 @@ edition = "2021"
 codec = { path = "../codec" }
 lob_core = { package = "lob-core", path = "../core" }
 thiserror = { workspace = true }
+memmap2 = { workspace = true, optional = true }
+
+[features]
+bin = ["codec/bin"]
+mmap = ["bin", "memmap2"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+orderbook = { path = "../orderbook" }
