@@ -58,6 +58,15 @@ best_bid=100123@4 best_ask=100124@2
 - Add binary log format for higher replay throughput.
 - Expand CLI with replay summaries and export options.
 
+## Engine-first roadmap
+This repository is research/simulation oriented (no live trading or exchange
+credentials). Design notes:
+- `docs/engine_architecture.md`
+- `docs/strategy_api.md`
+- `docs/oms.md`
+- `docs/risk.md`
+- `docs/venue.md`
+
 ## Educational disclaimer
 This project is for learning and experimentation. It is not production trading
 software and should not be used for live trading or financial decisions.
