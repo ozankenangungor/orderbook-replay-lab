@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["core", "codec", "orderbook", "replay", "metrics", "cli"]
+members = [
+    "core",
+    "codec",
+    "orderbook",
+    "replay",
+    "metrics",
+    "cli",
+    "trading-types",
+]
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
