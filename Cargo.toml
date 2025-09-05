@@ -11,6 +11,7 @@ members = [
     "strategy-api",
     "strategies",
     "oms",
+    "portfolio",
 ]
 
 [workspace.dependencies]

@@ -51,6 +51,8 @@ pub struct ExecutionReport {
     pub last_fill_price: Price,
     pub fee_ticks: i64,
     pub ts_ns: u64,
+    pub symbol: Symbol,
+    pub side: Side,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

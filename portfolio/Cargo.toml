@@ -1,0 +1,8 @@
+[package]
+name = "portfolio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lob_core = { package = "lob-core", path = "../core" }
+trading-types = { path = "../trading-types" }
