@@ -1,0 +1,9 @@
+[package]
+name = "risk"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lob_core = { package = "lob-core", path = "../core" }
+strategy-api = { path = "../strategy-api" }
+trading-types = { path = "../trading-types" }

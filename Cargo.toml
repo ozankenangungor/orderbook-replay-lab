@@ -12,6 +12,9 @@ members = [
     "strategies",
     "oms",
     "portfolio",
+    "risk",
+    "venue",
+    "engine",
 ]
 
 [workspace.dependencies]

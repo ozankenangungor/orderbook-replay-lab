@@ -1,0 +1,16 @@
+[package]
+name = "engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lob_core = { package = "lob-core", path = "../core" }
+orderbook = { path = "../orderbook" }
+replay = { path = "../replay" }
+metrics = { path = "../metrics" }
+trading-types = { path = "../trading-types" }
+strategy-api = { path = "../strategy-api" }
+oms = { path = "../oms" }
+risk = { path = "../risk" }
+venue = { path = "../venue" }
+portfolio = { path = "../portfolio" }
