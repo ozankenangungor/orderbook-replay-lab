@@ -1,0 +1,11 @@
+[package]
+name = "venue-sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+venue = { path = "../venue" }
+orderbook = { path = "../orderbook" }
+oms = { path = "../oms" }
+trading-types = { path = "../trading-types" }
+lob_core = { package = "lob-core", path = "../core" }

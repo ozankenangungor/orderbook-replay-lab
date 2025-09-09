@@ -3,8 +3,46 @@ use strategy_api::{ContextSnapshot, Strategy};
 use trading_types::{ExecutionReport, Intent};
 
 pub struct NoopStrategy;
+pub struct TwapStrategy;
+pub struct MmStrategy;
 
 impl Strategy for NoopStrategy {
+    fn on_market_event(&mut self, _ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+        Vec::new()
+    }
+
+    fn on_timer(&mut self, _ctx: &ContextSnapshot) -> Vec<Intent> {
+        Vec::new()
+    }
+
+    fn on_execution_report(
+        &mut self,
+        _ctx: &ContextSnapshot,
+        _report: &ExecutionReport,
+    ) -> Vec<Intent> {
+        Vec::new()
+    }
+}
+
+impl Strategy for TwapStrategy {
+    fn on_market_event(&mut self, _ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+        Vec::new()
+    }
+
+    fn on_timer(&mut self, _ctx: &ContextSnapshot) -> Vec<Intent> {
+        Vec::new()
+    }
+
+    fn on_execution_report(
+        &mut self,
+        _ctx: &ContextSnapshot,
+        _report: &ExecutionReport,
+    ) -> Vec<Intent> {
+        Vec::new()
+    }
+}
+
+impl Strategy for MmStrategy {
     fn on_market_event(&mut self, _ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
         Vec::new()
     }

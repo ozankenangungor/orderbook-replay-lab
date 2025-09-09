@@ -1,14 +1,24 @@
+use std::cell::RefCell;
 use std::io::{BufWriter, Write};
 use std::path::Path;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use engine::Engine;
 use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
 use metrics::{LatencyStats, ThroughputTracker};
+use oms::Oms;
 use orderbook::OrderBook;
+use portfolio::Portfolio;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use replay::ReplayReader;
+use risk::RiskEngine;
+use strategies::{MmStrategy, NoopStrategy, TwapStrategy};
+use trading_types::OrderStatus;
+use venue::ExecutionVenue;
+use venue_sim::SimVenue;
 
 const GEN_SEED_DEFAULT: u64 = 42;
 
@@ -27,6 +37,13 @@ struct Cli {
 enum LogFormat {
     Jsonl,
     Bin,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum StrategyKind {
+    Noop,
+    Twap,
+    Mm,
 }
 
 #[derive(Subcommand)]
@@ -52,6 +69,18 @@ enum Commands {
         seed: u64,
         #[arg(long)]
         snapshot_first: bool,
+        #[arg(long, value_enum, default_value_t = LogFormat::Jsonl)]
+        format: LogFormat,
+    },
+    Simulate {
+        #[arg(long)]
+        input: std::path::PathBuf,
+        #[arg(long)]
+        symbol: String,
+        #[arg(long, value_enum, default_value_t = StrategyKind::Noop)]
+        strategy: StrategyKind,
+        #[arg(long)]
+        limit: Option<u64>,
         #[arg(long, value_enum, default_value_t = LogFormat::Jsonl)]
         format: LogFormat,
     },
@@ -81,6 +110,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             snapshot_first,
             format,
         } => run_gen(&output, &symbol, events, seed, snapshot_first, format),
+        Commands::Simulate {
+            input,
+            symbol,
+            strategy,
+            limit,
+            format,
+        } => run_simulate(&input, &symbol, strategy, limit, format),
     }
 }
 
@@ -224,6 +260,128 @@ fn run_gen(
     writer.flush()?;
     println!("generated={} output={}", events, output.display());
     Ok(())
+}
+
+fn run_simulate(
+    input: &Path,
+    symbol: &str,
+    strategy: StrategyKind,
+    limit: Option<u64>,
+    format: LogFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let symbol = Symbol::new(symbol)?;
+    let format = match format {
+        LogFormat::Jsonl => replay::ReplayFormat::Jsonl,
+        LogFormat::Bin => replay::ReplayFormat::Bin,
+    };
+
+    let mut reader = ReplayReader::open_with_format(input, format)?;
+    let shared_book = Rc::new(RefCell::new(OrderBook::new(symbol.clone())));
+    let sim_venue = SimVenue::new(shared_book.clone(), 0, 0);
+    let counters = Rc::new(RefCell::new(VenueCounters::default()));
+    let venue = CountingVenue::new(sim_venue, counters.clone());
+
+    let mut engine = Engine::with_shared_book(
+        shared_book,
+        Portfolio::new(),
+        Oms::new(),
+        RiskEngine::new(),
+        make_strategy(strategy),
+        Box::new(venue),
+    );
+
+    let mut throughput = ThroughputTracker::new(Duration::from_secs(1));
+    let start = Instant::now();
+    let mut events_read = 0u64;
+    let mut events_applied = 0u64;
+
+    while let Some(event) = reader.next_event()? {
+        events_read += 1;
+        if engine.on_market_event(&event) {
+            events_applied += 1;
+            throughput.record(1);
+        }
+
+        if let Some(limit) = limit {
+            if events_read >= limit {
+                break;
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+    let throughput_windowed = throughput.events_per_sec().unwrap_or(0.0);
+    let throughput_overall = if elapsed.as_secs_f64() > 0.0 {
+        events_applied as f64 / elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    let counts = counters.borrow();
+    println!("events_read={}", events_read);
+    println!("events_applied_to_book={}", events_applied);
+    println!("orders_sent={}", counts.orders_sent);
+    println!("fills_count={}", counts.fills_count);
+    println!("final_position_lots={}", engine.position_lots(&symbol));
+    println!("realized_pnl_ticks={}", engine.realized_pnl_ticks(&symbol));
+    println!("fees_paid_ticks={}", engine.fees_paid_ticks(&symbol));
+    println!("throughput_windowed={:.2} events/sec", throughput_windowed);
+    println!("throughput_overall={:.2} events/sec", throughput_overall);
+    println!("latency={}", engine.latency_stats().summary_string());
+
+    Ok(())
+}
+
+fn make_strategy(strategy: StrategyKind) -> Box<dyn strategy_api::Strategy> {
+    match strategy {
+        StrategyKind::Noop => Box::new(NoopStrategy),
+        StrategyKind::Twap => Box::new(TwapStrategy),
+        StrategyKind::Mm => Box::new(MmStrategy),
+    }
+}
+
+#[derive(Default)]
+struct VenueCounters {
+    orders_sent: u64,
+    fills_count: u64,
+}
+
+struct CountingVenue<V: ExecutionVenue> {
+    inner: V,
+    counters: Rc<RefCell<VenueCounters>>,
+}
+
+impl<V: ExecutionVenue> CountingVenue<V> {
+    fn new(inner: V, counters: Rc<RefCell<VenueCounters>>) -> Self {
+        Self { inner, counters }
+    }
+}
+
+impl<V: ExecutionVenue> ExecutionVenue for CountingVenue<V> {
+    fn submit(&mut self, req: &oms::OrderRequest) -> Vec<trading_types::ExecutionReport> {
+        {
+            let mut counters = self.counters.borrow_mut();
+            counters.orders_sent += 1;
+        }
+
+        let reports = self.inner.submit(req);
+        let fills = reports
+            .iter()
+            .filter(|report| {
+                matches!(
+                    report.status,
+                    OrderStatus::Filled | OrderStatus::PartiallyFilled
+                ) && !report.filled_qty.is_zero()
+            })
+            .count() as u64;
+
+        if fills > 0 {
+            let mut counters = self.counters.borrow_mut();
+            counters.fills_count += fills;
+        }
+
+        reports
+    }
 }
 
 fn write_event(

@@ -15,6 +15,15 @@ lob_core = { package = "lob-core", path = "../core" }
 metrics = { path = "../metrics" }
 orderbook = { path = "../orderbook" }
 replay = { path = "../replay" }
+engine = { path = "../engine" }
+oms = { path = "../oms" }
+portfolio = { path = "../portfolio" }
+risk = { path = "../risk" }
+strategies = { path = "../strategies" }
+strategy-api = { path = "../strategy-api" }
+venue-sim = { path = "../venue-sim" }
+venue = { path = "../venue" }
+trading-types = { path = "../trading-types" }
 
 [features]
 bin = ["codec/bin", "replay/bin"]
