@@ -39,6 +39,16 @@ enum LogFormat {
     Bin,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SimulateStrategyConfig {
+    twap_target: i64,
+    twap_horizon: u64,
+    twap_slice: i64,
+    mm_half_spread: i64,
+    mm_qty: i64,
+    mm_skew_per_lot: i64,
+}
+
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum StrategyKind {
     Noop,
@@ -79,6 +89,18 @@ enum Commands {
         symbol: String,
         #[arg(long, value_enum, default_value_t = StrategyKind::Noop)]
         strategy: StrategyKind,
+        #[arg(long, default_value_t = 10)]
+        twap_target: i64,
+        #[arg(long, default_value_t = 60)]
+        twap_horizon: u64,
+        #[arg(long, default_value_t = 1)]
+        twap_slice: i64,
+        #[arg(long, default_value_t = 1)]
+        mm_half_spread: i64,
+        #[arg(long, default_value_t = 1)]
+        mm_qty: i64,
+        #[arg(long, default_value_t = 1)]
+        mm_skew_per_lot: i64,
         #[arg(long)]
         limit: Option<u64>,
         #[arg(long, value_enum, default_value_t = LogFormat::Jsonl)]
@@ -114,9 +136,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             input,
             symbol,
             strategy,
+            twap_target,
+            twap_horizon,
+            twap_slice,
+            mm_half_spread,
+            mm_qty,
+            mm_skew_per_lot,
             limit,
             format,
-        } => run_simulate(&input, &symbol, strategy, limit, format),
+        } => {
+            let config = SimulateStrategyConfig {
+                twap_target,
+                twap_horizon,
+                twap_slice,
+                mm_half_spread,
+                mm_qty,
+                mm_skew_per_lot,
+            };
+            run_simulate(&input, &symbol, strategy, &config, limit, format)
+        }
     }
 }
 
@@ -266,6 +304,7 @@ fn run_simulate(
     input: &Path,
     symbol: &str,
     strategy: StrategyKind,
+    config: &SimulateStrategyConfig,
     limit: Option<u64>,
     format: LogFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -286,7 +325,7 @@ fn run_simulate(
         Portfolio::new(),
         Oms::new(),
         RiskEngine::new(),
-        make_strategy(strategy),
+        make_strategy(strategy, config),
         Box::new(venue),
     );
 
@@ -332,11 +371,22 @@ fn run_simulate(
     Ok(())
 }
 
-fn make_strategy(strategy: StrategyKind) -> Box<dyn strategy_api::Strategy> {
+fn make_strategy(
+    strategy: StrategyKind,
+    config: &SimulateStrategyConfig,
+) -> Box<dyn strategy_api::Strategy> {
     match strategy {
         StrategyKind::Noop => Box::new(NoopStrategy),
-        StrategyKind::Twap => Box::new(TwapStrategy),
-        StrategyKind::Mm => Box::new(MmStrategy),
+        StrategyKind::Twap => Box::new(TwapStrategy::new(
+            config.twap_target,
+            config.twap_horizon,
+            config.twap_slice,
+        )),
+        StrategyKind::Mm => Box::new(MmStrategy::new(
+            config.mm_half_spread,
+            config.mm_qty,
+            config.mm_skew_per_lot,
+        )),
     }
 }
 
