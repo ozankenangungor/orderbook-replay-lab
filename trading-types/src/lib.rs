@@ -47,8 +47,11 @@ pub struct OrderRequest {
 pub struct ExecutionReport {
     pub client_order_id: ClientOrderId,
     pub status: OrderStatus,
+    /// Cumulative filled quantity for this `client_order_id` over the order lifecycle.
+    /// Expected to be monotonic non-decreasing across reports for the same order.
     pub filled_qty: Qty,
     pub last_fill_price: Price,
+    /// Incremental fee for this specific report (delta), not cumulative lifetime fee.
     pub fee_ticks: i64,
     pub ts_ns: u64,
     pub symbol: Symbol,
