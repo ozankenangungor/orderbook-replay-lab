@@ -1,0 +1,52 @@
+name: Feature Request
+description: Propose an improvement or new capability.
+title: "feat: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the problem and proposed solution clearly.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: Short title for the request.
+      placeholder: Add deterministic timer ticks in replay simulation
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Use Case
+      description: What limitation are you facing?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the preferred approach.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Optional alternatives or tradeoffs considered.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Clear criteria for completion.
+      placeholder: |
+        - `cargo test --workspace` passes
+        - New CLI arg documented
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional Context
+      description: Links, examples, benchmarks, or references.
