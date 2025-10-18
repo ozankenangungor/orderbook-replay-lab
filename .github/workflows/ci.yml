@@ -4,6 +4,7 @@ on:
   push:
     branches: ["main"]
   pull_request:
+    branches: ["main"]
 
 jobs:
   rust:
@@ -17,11 +18,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache Rust Artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Format
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --all-targets
+        run: cargo test --locked --workspace --all-targets --all-features
