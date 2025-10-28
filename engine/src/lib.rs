@@ -10,7 +10,7 @@ use orderbook::OrderBook;
 use portfolio::Portfolio;
 use risk::{RiskAction, RiskEngine};
 use strategy_api::{ContextSnapshot, Strategy};
-use trading_types::Intent;
+use trading_types::{ExecutionReport, Intent};
 use venue::ExecutionVenue;
 
 const MAX_INTENT_STEPS: usize = 1024;
@@ -77,9 +77,14 @@ impl Engine {
             MarketEvent::L2Snapshot { ts_ns, symbol, .. } => (*ts_ns, symbol.clone()),
         };
 
+        let mut queue = VecDeque::new();
+        let passive_reports = self.venue.on_book_update();
+        self.process_reports(passive_reports, &mut queue);
+
         let ctx = self.build_context(ts_ns, &symbol);
         let intents = self.strategy.on_market_event(&ctx, event);
-        self.handle_intents(ts_ns, &symbol, intents);
+        queue.extend(intents);
+        self.handle_intent_queue(ts_ns, &symbol, queue);
 
         let ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         self.latency.record(ns.max(1));
@@ -93,7 +98,10 @@ impl Engine {
     }
 
     fn handle_intents(&mut self, ts_ns: u64, symbol: &Symbol, intents: Vec<Intent>) {
-        let mut queue = VecDeque::from(intents);
+        self.handle_intent_queue(ts_ns, symbol, VecDeque::from(intents));
+    }
+
+    fn handle_intent_queue(&mut self, ts_ns: u64, symbol: &Symbol, mut queue: VecDeque<Intent>) {
         let mut processed_steps = 0usize;
 
         while let Some(intent) = queue.pop_front() {
@@ -117,13 +125,17 @@ impl Engine {
                 continue;
             };
             let reports = self.venue.submit(&request);
-            for report in reports {
-                self.oms.on_execution_report(&report);
-                self.portfolio.on_execution_report(&report);
-                let report_ctx = self.build_context(report.ts_ns, &report.symbol);
-                let follow_up = self.strategy.on_execution_report(&report_ctx, &report);
-                queue.extend(follow_up);
-            }
+            self.process_reports(reports, &mut queue);
+        }
+    }
+
+    fn process_reports(&mut self, reports: Vec<ExecutionReport>, queue: &mut VecDeque<Intent>) {
+        for report in reports {
+            self.oms.on_execution_report(&report);
+            self.portfolio.on_execution_report(&report);
+            let report_ctx = self.build_context(report.ts_ns, &report.symbol);
+            let follow_up = self.strategy.on_execution_report(&report_ctx, &report);
+            queue.extend(follow_up);
         }
     }
 
