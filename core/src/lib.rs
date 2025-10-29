@@ -1,7 +1,11 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
+use std::sync::{Arc, OnceLock, RwLock};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -53,28 +57,96 @@ impl FromStr for Side {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Symbol(String);
+pub struct SymbolId(u32);
+
+impl SymbolId {
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Symbol {
+    id: SymbolId,
+    value: Arc<str>,
+}
+
+#[derive(Default)]
+struct SymbolInterner {
+    by_text: HashMap<Arc<str>, SymbolId>,
+    by_id: Vec<Arc<str>>,
+}
+
+impl SymbolInterner {
+    fn intern(&mut self, value: &str) -> (SymbolId, Arc<str>) {
+        if let Some(symbol_id) = self.by_text.get(value).copied() {
+            let index = symbol_id.as_u32() as usize;
+            if let Some(interned) = self.by_id.get(index) {
+                return (symbol_id, Arc::clone(interned));
+            }
+        }
+
+        let interned: Arc<str> = Arc::from(value);
+        let symbol_id = SymbolId(self.by_id.len() as u32);
+        self.by_text.insert(Arc::clone(&interned), symbol_id);
+        self.by_id.push(Arc::clone(&interned));
+        (symbol_id, interned)
+    }
+}
+
+fn with_symbol_interner<R>(f: impl FnOnce(&mut SymbolInterner) -> R) -> R {
+    static SYMBOL_INTERNER: OnceLock<RwLock<SymbolInterner>> = OnceLock::new();
+    let interner = SYMBOL_INTERNER.get_or_init(|| RwLock::new(SymbolInterner::default()));
+    let mut guard = match interner.write() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    f(&mut guard)
+}
 
 impl Symbol {
-    pub fn new<S: Into<String>>(value: S) -> Result<Self, CoreError> {
-        let value = value.into();
+    pub fn new<S: AsRef<str>>(value: S) -> Result<Self, CoreError> {
+        let value = value.as_ref();
         let trimmed = value.trim();
         if trimmed.is_empty() {
-            return Err(CoreError::InvalidSymbol(value));
+            return Err(CoreError::InvalidSymbol(value.to_string()));
         }
-        Ok(Self(trimmed.to_string()))
+
+        let (id, interned) = with_symbol_interner(|interner| interner.intern(trimmed));
+        Ok(Self {
+            id,
+            value: interned,
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.value
+    }
+
+    pub fn id(&self) -> SymbolId {
+        self.id
+    }
+}
+
+impl PartialEq for Symbol {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Symbol {}
+
+impl Hash for Symbol {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
     }
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.value)
     }
 }
 
@@ -88,7 +160,26 @@ impl FromStr for Symbol {
 
 impl AsRef<str> for Symbol {
     fn as_ref(&self) -> &str {
-        &self.0
+        &self.value
+    }
+}
+
+impl Serialize for Symbol {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Symbol {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Cow::<str>::deserialize(deserializer)?;
+        Symbol::new(value.as_ref()).map_err(serde::de::Error::custom)
     }
 }
 
@@ -195,6 +286,14 @@ mod tests {
     fn symbol_requires_non_empty() {
         assert!(Symbol::new("BTC-USD").is_ok());
         assert!(Symbol::new("   ").is_err());
+    }
+
+    #[test]
+    fn symbol_interning_reuses_symbol_id() {
+        let a = Symbol::new("BTC-USD").unwrap();
+        let b = Symbol::new(" BTC-USD ").unwrap();
+        assert_eq!(a.id(), b.id());
+        assert_eq!(a, b);
     }
 
     #[test]
