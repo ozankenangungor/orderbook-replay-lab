@@ -48,6 +48,7 @@ struct OrderEntry {
 pub struct Oms {
     next_id: u64,
     orders: HashMap<ClientOrderId, OrderEntry>,
+    open_orders_count: usize,
     orphan_reports: u64,
 }
 
@@ -56,6 +57,7 @@ impl Oms {
         Self {
             next_id: 1,
             orders: HashMap::new(),
+            open_orders_count: 0,
             orphan_reports: 0,
         }
     }
@@ -88,6 +90,7 @@ impl Oms {
                         filled_qty: Qty::new(0).expect("zero qty"),
                     },
                 );
+                self.open_orders_count = self.open_orders_count.saturating_add(1);
                 Some(OrderRequest::Place(request))
             }
             Intent::Cancel { client_order_id } => {
@@ -146,6 +149,14 @@ impl Oms {
             return;
         }
 
+        let was_open = !entry.state.is_terminal();
+        let is_open = !new_state.is_terminal();
+        if was_open && !is_open {
+            self.open_orders_count = self.open_orders_count.saturating_sub(1);
+        } else if !was_open && is_open {
+            self.open_orders_count = self.open_orders_count.saturating_add(1);
+        }
+
         entry.filled_qty = report.filled_qty;
         entry.state = new_state;
     }
@@ -155,10 +166,7 @@ impl Oms {
     }
 
     pub fn open_orders(&self) -> usize {
-        self.orders
-            .values()
-            .filter(|entry| !entry.state.is_terminal())
-            .count()
+        self.open_orders_count
     }
 
     #[cfg(test)]
@@ -236,6 +244,7 @@ mod tests {
         };
         let id = order.client_order_id;
         assert_eq!(oms.order_state(id), Some(OrderState::PendingNew));
+        assert_eq!(oms.open_orders(), 1);
 
         oms.on_execution_report(&build_report(
             id,
@@ -246,6 +255,7 @@ mod tests {
             2,
         ));
         assert_eq!(oms.order_state(id), Some(OrderState::Live));
+        assert_eq!(oms.open_orders(), 1);
 
         oms.on_execution_report(&build_report(
             id,
@@ -257,6 +267,7 @@ mod tests {
         ));
         assert_eq!(oms.order_state(id), Some(OrderState::Filled));
         assert_eq!(oms.filled_qty(id).unwrap().lots(), 2);
+        assert_eq!(oms.open_orders(), 0);
     }
 
     #[test]
@@ -275,6 +286,7 @@ mod tests {
             panic!("expected place request");
         };
         let id = order.client_order_id;
+        assert_eq!(oms.open_orders(), 1);
         oms.on_execution_report(&build_report(
             id,
             &Symbol::new("ETH-USD").unwrap(),
@@ -283,6 +295,7 @@ mod tests {
             0,
             2,
         ));
+        assert_eq!(oms.open_orders(), 1);
 
         let cancel_intent = Intent::Cancel {
             client_order_id: id,
@@ -290,6 +303,7 @@ mod tests {
         let cancel_req = oms.apply_intent(cancel_intent, 3).unwrap();
         assert!(matches!(cancel_req, OrderRequest::Cancel { .. }));
         assert_eq!(oms.order_state(id), Some(OrderState::PendingCancel));
+        assert_eq!(oms.open_orders(), 1);
 
         oms.on_execution_report(&build_report(
             id,
@@ -300,6 +314,7 @@ mod tests {
             4,
         ));
         assert_eq!(oms.order_state(id), Some(OrderState::Canceled));
+        assert_eq!(oms.open_orders(), 0);
     }
 
     #[test]
@@ -318,6 +333,7 @@ mod tests {
             panic!("expected place request");
         };
         let id = order.client_order_id;
+        assert_eq!(oms.open_orders(), 1);
         oms.on_execution_report(&build_report(
             id,
             &Symbol::new("SOL-USD").unwrap(),
@@ -340,5 +356,6 @@ mod tests {
 
         assert_eq!(oms.order_state(id), Some(OrderState::Filled));
         assert_eq!(oms.filled_qty(id).unwrap().lots(), 3);
+        assert_eq!(oms.open_orders(), 0);
     }
 }
