@@ -7,6 +7,8 @@ pub struct OrderBook {
     symbol: Symbol,
     bids: BTreeMap<Price, Qty>,
     asks: BTreeMap<Price, Qty>,
+    best_bid_cache: Option<(Price, Qty)>,
+    best_ask_cache: Option<(Price, Qty)>,
 }
 
 impl OrderBook {
@@ -15,6 +17,51 @@ impl OrderBook {
             symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
+            best_bid_cache: None,
+            best_ask_cache: None,
+        }
+    }
+
+    fn refresh_best_levels(&mut self) {
+        self.best_bid_cache = self.bids.iter().next_back().map(|(p, q)| (*p, *q));
+        self.best_ask_cache = self.asks.iter().next().map(|(p, q)| (*p, *q));
+    }
+
+    fn apply_bid_update(&mut self, price: Price, qty: Qty) {
+        if qty.is_zero() {
+            self.bids.remove(&price);
+            if matches!(self.best_bid_cache, Some((best_price, _)) if best_price == price) {
+                self.best_bid_cache = self.bids.iter().next_back().map(|(p, q)| (*p, *q));
+            }
+            return;
+        }
+
+        self.bids.insert(price, qty);
+        if self
+            .best_bid_cache
+            .map(|(best_price, _)| price >= best_price)
+            .unwrap_or(true)
+        {
+            self.best_bid_cache = Some((price, qty));
+        }
+    }
+
+    fn apply_ask_update(&mut self, price: Price, qty: Qty) {
+        if qty.is_zero() {
+            self.asks.remove(&price);
+            if matches!(self.best_ask_cache, Some((best_price, _)) if best_price == price) {
+                self.best_ask_cache = self.asks.iter().next().map(|(p, q)| (*p, *q));
+            }
+            return;
+        }
+
+        self.asks.insert(price, qty);
+        if self
+            .best_ask_cache
+            .map(|(best_price, _)| price <= best_price)
+            .unwrap_or(true)
+        {
+            self.best_ask_cache = Some((price, qty));
         }
     }
 
@@ -28,15 +75,9 @@ impl OrderBook {
                 }
 
                 for update in updates {
-                    let book = match update.side {
-                        Side::Bid => &mut self.bids,
-                        Side::Ask => &mut self.asks,
-                    };
-
-                    if update.qty.is_zero() {
-                        book.remove(&update.price);
-                    } else {
-                        book.insert(update.price, update.qty);
+                    match update.side {
+                        Side::Bid => self.apply_bid_update(update.price, update.qty),
+                        Side::Ask => self.apply_ask_update(update.price, update.qty),
                     }
                 }
                 true
@@ -50,6 +91,8 @@ impl OrderBook {
 
                 self.bids.clear();
                 self.asks.clear();
+                self.best_bid_cache = None;
+                self.best_ask_cache = None;
 
                 for (price, qty) in bids.iter().copied() {
                     if !qty.is_zero() {
@@ -63,17 +106,19 @@ impl OrderBook {
                     }
                 }
 
+                self.refresh_best_levels();
+
                 true
             }
         }
     }
 
     pub fn best_bid(&self) -> Option<(Price, Qty)> {
-        self.bids.iter().next_back().map(|(p, q)| (*p, *q))
+        self.best_bid_cache
     }
 
     pub fn best_ask(&self) -> Option<(Price, Qty)> {
-        self.asks.iter().next().map(|(p, q)| (*p, *q))
+        self.best_ask_cache
     }
 
     pub fn spread(&self) -> Option<Price> {
