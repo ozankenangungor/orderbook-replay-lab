@@ -10,6 +10,20 @@ use venue::ExecutionVenue;
 
 const MAX_PASSIVE_FILLS_PER_EVENT: usize = 1024;
 
+fn zero_price() -> Price {
+    match Price::new(0) {
+        Ok(price) => price,
+        Err(_) => unreachable!("zero price must be valid"),
+    }
+}
+
+fn zero_qty() -> Qty {
+    match Qty::new(0) {
+        Ok(qty) => qty,
+        Err(_) => unreachable!("zero qty must be valid"),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LiveOrder {
     symbol: Symbol,
@@ -43,7 +57,11 @@ impl SimVenue {
         ts
     }
 
-    fn handle_place(&mut self, order: &trading_types::OrderRequest) -> Vec<ExecutionReport> {
+    fn handle_place(
+        &mut self,
+        order: &trading_types::OrderRequest,
+        out: &mut Vec<ExecutionReport>,
+    ) {
         let (best_bid, best_ask) = {
             let book = self.book.borrow();
             (book.best_bid(), book.best_ask())
@@ -52,7 +70,8 @@ impl SimVenue {
         let crossing_price = match order.order_type {
             OrderType::Limit => {
                 let Some(limit) = order.price else {
-                    return vec![self.rejected(order)];
+                    out.push(self.rejected(order));
+                    return;
                 };
                 match order.side {
                     Side::Bid => best_ask.and_then(|(ask, _)| {
@@ -77,14 +96,11 @@ impl SimVenue {
             },
         };
 
-        let mut reports = Vec::new();
-        let ack_price = crossing_price
-            .or(order.price)
-            .unwrap_or_else(|| Price::new(0).unwrap());
-        reports.push(ExecutionReport {
+        let ack_price = crossing_price.or(order.price).unwrap_or_else(zero_price);
+        out.push(ExecutionReport {
             client_order_id: order.client_order_id,
             status: OrderStatus::Accepted,
-            filled_qty: Qty::new(0).unwrap(),
+            filled_qty: zero_qty(),
             last_fill_price: ack_price,
             fee_ticks: 0,
             ts_ns: self.next_ts(),
@@ -93,7 +109,7 @@ impl SimVenue {
         });
 
         if let Some(fill_price) = crossing_price {
-            reports.push(ExecutionReport {
+            out.push(ExecutionReport {
                 client_order_id: order.client_order_id,
                 status: OrderStatus::Filled,
                 filled_qty: order.qty,
@@ -114,8 +130,6 @@ impl SimVenue {
                 },
             );
         }
-
-        reports
     }
 
     fn handle_replace(
@@ -123,9 +137,10 @@ impl SimVenue {
         client_order_id: ClientOrderId,
         new_price: Price,
         new_qty: Qty,
-    ) -> Vec<ExecutionReport> {
+        out: &mut Vec<ExecutionReport>,
+    ) {
         let Some(mut order) = self.live_orders.remove(&client_order_id) else {
-            return Vec::new();
+            return;
         };
 
         order.price = Some(new_price);
@@ -153,11 +168,10 @@ impl SimVenue {
             }),
         };
 
-        let mut reports = Vec::new();
-        reports.push(ExecutionReport {
+        out.push(ExecutionReport {
             client_order_id,
             status: OrderStatus::Accepted,
-            filled_qty: Qty::new(0).unwrap(),
+            filled_qty: zero_qty(),
             last_fill_price: new_price,
             fee_ticks: 0,
             ts_ns: self.next_ts(),
@@ -166,7 +180,7 @@ impl SimVenue {
         });
 
         if let Some(fill_price) = crossing_price {
-            reports.push(ExecutionReport {
+            out.push(ExecutionReport {
                 client_order_id,
                 status: OrderStatus::Filled,
                 filled_qty: new_qty,
@@ -179,33 +193,31 @@ impl SimVenue {
         } else {
             self.live_orders.insert(client_order_id, order);
         }
-
-        reports
     }
 
-    fn handle_cancel(&mut self, client_order_id: ClientOrderId) -> Vec<ExecutionReport> {
+    fn handle_cancel(&mut self, client_order_id: ClientOrderId, out: &mut Vec<ExecutionReport>) {
         let Some(order) = self.live_orders.remove(&client_order_id) else {
-            return Vec::new();
+            return;
         };
 
-        vec![ExecutionReport {
+        out.push(ExecutionReport {
             client_order_id,
             status: OrderStatus::Canceled,
-            filled_qty: Qty::new(0).unwrap(),
-            last_fill_price: order.price.unwrap_or_else(|| Price::new(0).unwrap()),
+            filled_qty: zero_qty(),
+            last_fill_price: order.price.unwrap_or_else(zero_price),
             fee_ticks: 0,
             ts_ns: self.next_ts(),
             symbol: order.symbol,
             side: order.side,
-        }]
+        });
     }
 
     fn rejected(&mut self, order: &trading_types::OrderRequest) -> ExecutionReport {
         ExecutionReport {
             client_order_id: order.client_order_id,
             status: OrderStatus::Rejected,
-            filled_qty: Qty::new(0).unwrap(),
-            last_fill_price: order.price.unwrap_or_else(|| Price::new(0).unwrap()),
+            filled_qty: zero_qty(),
+            last_fill_price: order.price.unwrap_or_else(zero_price),
             fee_ticks: 0,
             ts_ns: self.next_ts(),
             symbol: order.symbol.clone(),
@@ -239,22 +251,22 @@ impl SimVenue {
 }
 
 impl ExecutionVenue for SimVenue {
-    fn submit(&mut self, req: &OrderRequest) -> Vec<ExecutionReport> {
+    fn submit(&mut self, req: &OrderRequest, out: &mut Vec<ExecutionReport>) {
         match req {
-            OrderRequest::Place(order) => self.handle_place(order),
+            OrderRequest::Place(order) => self.handle_place(order, out),
             OrderRequest::Cancel {
                 client_order_id, ..
-            } => self.handle_cancel(*client_order_id),
+            } => self.handle_cancel(*client_order_id, out),
             OrderRequest::Replace {
                 client_order_id,
                 new_price,
                 new_qty,
                 ..
-            } => self.handle_replace(*client_order_id, *new_price, *new_qty),
+            } => self.handle_replace(*client_order_id, *new_price, *new_qty, out),
         }
     }
 
-    fn on_book_update(&mut self) -> Vec<ExecutionReport> {
+    fn on_book_update(&mut self, out: &mut Vec<ExecutionReport>) {
         let (best_bid, best_ask) = {
             let book = self.book.borrow();
             (book.best_bid(), book.best_ask())
@@ -263,9 +275,8 @@ impl ExecutionVenue for SimVenue {
         let mut order_ids: Vec<ClientOrderId> = self.live_orders.keys().copied().collect();
         order_ids.sort_by_key(|id| id.0);
 
-        let mut reports = Vec::new();
         for client_order_id in order_ids {
-            if reports.len() >= MAX_PASSIVE_FILLS_PER_EVENT {
+            if out.len() >= MAX_PASSIVE_FILLS_PER_EVENT {
                 break;
             }
 
@@ -282,7 +293,7 @@ impl ExecutionVenue for SimVenue {
             };
 
             self.live_orders.remove(&client_order_id);
-            reports.push(ExecutionReport {
+            out.push(ExecutionReport {
                 client_order_id,
                 status: OrderStatus::Filled,
                 filled_qty: order.qty,
@@ -293,7 +304,5 @@ impl ExecutionVenue for SimVenue {
                 side: order.side,
             });
         }
-
-        reports
     }
 }
