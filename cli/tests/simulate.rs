@@ -42,7 +42,12 @@ fn simulate_noop_outputs_stats() {
 
     let mut file = File::create(&path).expect("create log");
     for event in events {
-        writeln!(file, "{}", encode_event_json_line(&event)).expect("write log");
+        writeln!(
+            file,
+            "{}",
+            encode_event_json_line(&event).expect("encode log")
+        )
+        .expect("write log");
     }
 
     let exe = env!("CARGO_BIN_EXE_orderbook-replay-lab-rs");

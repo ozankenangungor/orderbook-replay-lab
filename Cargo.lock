@@ -234,6 +234,7 @@ name = "codec"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "crc32fast",
  "lob-core",
  "serde",
  "serde_json",

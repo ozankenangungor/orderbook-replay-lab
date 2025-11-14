@@ -9,6 +9,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 bincode = { workspace = true, optional = true }
+crc32fast = { workspace = true, optional = true }
 
 [features]
-bin = ["bincode", "serde"]
+bin = ["bincode", "serde", "crc32fast"]

@@ -475,7 +475,7 @@ fn write_event(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match format {
         LogFormat::Jsonl => {
-            let line = codec::encode_event_json_line(event);
+            let line = codec::encode_event_json_line(event)?;
             writeln!(writer, "{}", line)?;
         }
         LogFormat::Bin => {

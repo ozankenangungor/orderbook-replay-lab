@@ -66,28 +66,31 @@ impl ReplayReader {
     }
 
     fn next_event_bin(&mut self) -> Result<Option<MarketEvent>, ReplayError> {
-        let mut len_buf = [0u8; 4];
+        let mut header_buf = [0u8; codec::BIN_RECORD_HEADER_LEN];
         let mut read = 0usize;
-        while read < len_buf.len() {
-            let n = self.reader.read(&mut len_buf[read..])?;
+        while read < header_buf.len() {
+            let n = self.reader.read(&mut header_buf[read..])?;
             if n == 0 {
                 if read == 0 {
                     return Ok(None);
                 }
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
-                    "truncated binary length prefix",
+                    "truncated binary record header",
                 )
                 .into());
             }
             read += n;
         }
 
-        let len = u32::from_le_bytes(len_buf) as usize;
-        self.bin_buf.resize(len, 0);
+        let header = codec::decode_event_bin_header(&header_buf)?;
+        let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
+        self.bin_buf.resize(record_len, 0);
+        self.bin_buf[..codec::BIN_RECORD_HEADER_LEN].copy_from_slice(&header_buf);
         let mut read = 0usize;
-        while read < len {
-            let n = self.reader.read(&mut self.bin_buf[read..])?;
+        while read < header.payload_len {
+            let start = codec::BIN_RECORD_HEADER_LEN + read;
+            let n = self.reader.read(&mut self.bin_buf[start..])?;
             if n == 0 {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
@@ -98,7 +101,7 @@ impl ReplayReader {
             read += n;
         }
 
-        let event = codec::decode_event_bin_payload(&self.bin_buf)?;
+        let event = codec::decode_event_bin_record(&self.bin_buf)?;
         Ok(Some(event))
     }
 }
@@ -115,23 +118,19 @@ impl MmapReplayReader {
         if self.pos == self.mmap.len() {
             return Ok(None);
         }
-        if self.mmap.len().saturating_sub(self.pos) < 4 {
+        if self.mmap.len().saturating_sub(self.pos) < codec::BIN_RECORD_HEADER_LEN {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "truncated binary length prefix",
+                "truncated binary record header",
             )
             .into());
         }
 
-        let len = u32::from_le_bytes([
-            self.mmap[self.pos],
-            self.mmap[self.pos + 1],
-            self.mmap[self.pos + 2],
-            self.mmap[self.pos + 3],
-        ]) as usize;
-        self.pos += 4;
+        let header_slice = &self.mmap[self.pos..self.pos + codec::BIN_RECORD_HEADER_LEN];
+        let header = codec::decode_event_bin_header(header_slice)?;
+        let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
 
-        if self.mmap.len().saturating_sub(self.pos) < len {
+        if self.mmap.len().saturating_sub(self.pos) < record_len {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "truncated binary payload",
@@ -139,9 +138,9 @@ impl MmapReplayReader {
             .into());
         }
 
-        let payload = &self.mmap[self.pos..self.pos + len];
-        self.pos += len;
-        let event = codec::decode_event_bin_payload(payload)?;
+        let record = &self.mmap[self.pos..self.pos + record_len];
+        self.pos += record_len;
+        let event = codec::decode_event_bin_record(record)?;
         Ok(Some(event))
     }
 }
@@ -182,8 +181,8 @@ mod tests {
         };
 
         let mut file = File::create(&path)?;
-        writeln!(file, "{}", codec::encode_event_json_line(&event_one))?;
-        writeln!(file, "{}", codec::encode_event_json_line(&event_two))?;
+        writeln!(file, "{}", codec::encode_event_json_line(&event_one)?)?;
+        writeln!(file, "{}", codec::encode_event_json_line(&event_two)?)?;
 
         let mut reader = ReplayReader::open(&path)?;
         assert_eq!(reader.next_event()?.unwrap(), event_one);
@@ -246,7 +245,7 @@ mod tests {
 
         let mut json_file = File::create(&json_path)?;
         for event in &events {
-            writeln!(json_file, "{}", codec::encode_event_json_line(event))?;
+            writeln!(json_file, "{}", codec::encode_event_json_line(event)?)?;
         }
 
         let mut bin_file = File::create(&bin_path)?;
