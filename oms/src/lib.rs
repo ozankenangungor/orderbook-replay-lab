@@ -45,6 +45,13 @@ struct OrderEntry {
     filled_qty: Qty,
 }
 
+fn zero_qty() -> Qty {
+    match Qty::new(0) {
+        Ok(qty) => qty,
+        Err(_) => unreachable!("zero qty must be valid"),
+    }
+}
+
 pub struct Oms {
     next_id: u64,
     orders: HashMap<ClientOrderId, OrderEntry>,
@@ -87,7 +94,7 @@ impl Oms {
                     client_order_id,
                     OrderEntry {
                         state: OrderState::PendingNew,
-                        filled_qty: Qty::new(0).expect("zero qty"),
+                        filled_qty: zero_qty(),
                     },
                 );
                 self.open_orders_count = self.open_orders_count.saturating_add(1);

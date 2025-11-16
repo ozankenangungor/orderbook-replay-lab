@@ -72,7 +72,17 @@ impl Engine {
     pub fn on_market_event(&mut self, event: &MarketEvent) -> bool {
         // Measures book apply + strategy decision + routing/venue response handling.
         let start = Instant::now();
+        let applied = self.on_market_event_deterministic(event);
+        if !applied {
+            return false;
+        }
 
+        let ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        self.latency.record(ns.max(1));
+        true
+    }
+
+    pub fn on_market_event_deterministic(&mut self, event: &MarketEvent) -> bool {
         let applied = self.book.borrow_mut().apply(event);
         if !applied {
             return false;
@@ -102,9 +112,6 @@ impl Engine {
         self.intent_queue = queue;
         self.intent_buffer = intents;
         self.report_buffer = reports;
-
-        let ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        self.latency.record(ns.max(1));
         true
     }
 

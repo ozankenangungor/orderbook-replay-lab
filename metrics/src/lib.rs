@@ -4,33 +4,41 @@ use hdrhistogram::Histogram;
 
 #[derive(Debug, Clone)]
 pub struct LatencyStats {
-    histogram: Histogram<u64>,
+    histogram: Option<Histogram<u64>>,
 }
 
 impl LatencyStats {
     pub fn new() -> Self {
-        let mut histogram =
-            Histogram::<u64>::new(3).expect("histogram construction should succeed");
-        histogram.auto(true);
+        let histogram = match Histogram::<u64>::new(3) {
+            Ok(mut histogram) => {
+                histogram.auto(true);
+                Some(histogram)
+            }
+            Err(_) => None,
+        };
         Self { histogram }
     }
 
     pub fn record(&mut self, ns: u64) {
-        self.histogram
-            .record(ns)
-            .expect("histogram should auto-resize to fit values");
+        if let Some(histogram) = &mut self.histogram {
+            let _ = histogram.record(ns);
+        }
     }
 
     pub fn summary_string(&self) -> String {
-        if self.histogram.is_empty() {
+        let Some(histogram) = &self.histogram else {
+            return "count=0 p50=0 p95=0 p99=0 max=0".to_string();
+        };
+
+        if histogram.is_empty() {
             return "count=0 p50=0 p95=0 p99=0 max=0".to_string();
         }
 
-        let p50 = self.histogram.value_at_quantile(0.50);
-        let p95 = self.histogram.value_at_quantile(0.95);
-        let p99 = self.histogram.value_at_quantile(0.99);
-        let max = self.histogram.max();
-        let count = self.histogram.len();
+        let p50 = histogram.value_at_quantile(0.50);
+        let p95 = histogram.value_at_quantile(0.95);
+        let p99 = histogram.value_at_quantile(0.99);
+        let max = histogram.max();
+        let count = histogram.len();
 
         format!(
             "count={} p50={} p95={} p99={} max={}",
@@ -39,7 +47,7 @@ impl LatencyStats {
     }
 
     pub fn count(&self) -> u64 {
-        self.histogram.len()
+        self.histogram.as_ref().map_or(0, Histogram::len)
     }
 }
 
