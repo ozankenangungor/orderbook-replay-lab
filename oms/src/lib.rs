@@ -210,12 +210,12 @@ fn map_status(status: OrderStatus) -> OrderState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lob_core::{Side, Symbol};
+    use lob_core::{Side, SymbolId};
     use trading_types::TimeInForce;
 
     fn build_report(
         client_order_id: ClientOrderId,
-        symbol: &Symbol,
+        symbol: SymbolId,
         side: Side,
         status: OrderStatus,
         filled_qty: i64,
@@ -228,7 +228,7 @@ mod tests {
             last_fill_price: Price::new(100).unwrap(),
             fee_ticks: 0,
             ts_ns,
-            symbol: symbol.clone(),
+            symbol,
             side,
         }
     }
@@ -236,8 +236,9 @@ mod tests {
     #[test]
     fn new_ack_fill_flow() {
         let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(1);
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("BTC-USD").unwrap(),
+            symbol,
             side: Side::Bid,
             price: Price::new(100).unwrap(),
             qty: Qty::new(2).unwrap(),
@@ -255,7 +256,7 @@ mod tests {
 
         oms.on_execution_report(&build_report(
             id,
-            &Symbol::new("BTC-USD").unwrap(),
+            symbol,
             Side::Bid,
             OrderStatus::Accepted,
             0,
@@ -266,7 +267,7 @@ mod tests {
 
         oms.on_execution_report(&build_report(
             id,
-            &Symbol::new("BTC-USD").unwrap(),
+            symbol,
             Side::Bid,
             OrderStatus::Filled,
             2,
@@ -280,8 +281,9 @@ mod tests {
     #[test]
     fn cancel_flow() {
         let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(2);
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("ETH-USD").unwrap(),
+            symbol,
             side: Side::Ask,
             price: Price::new(200).unwrap(),
             qty: Qty::new(1).unwrap(),
@@ -296,7 +298,7 @@ mod tests {
         assert_eq!(oms.open_orders(), 1);
         oms.on_execution_report(&build_report(
             id,
-            &Symbol::new("ETH-USD").unwrap(),
+            symbol,
             Side::Ask,
             OrderStatus::Accepted,
             0,
@@ -314,7 +316,7 @@ mod tests {
 
         oms.on_execution_report(&build_report(
             id,
-            &Symbol::new("ETH-USD").unwrap(),
+            symbol,
             Side::Ask,
             OrderStatus::Canceled,
             0,
@@ -327,8 +329,9 @@ mod tests {
     #[test]
     fn duplicate_fill_report_does_not_double_count() {
         let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(3);
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("SOL-USD").unwrap(),
+            symbol,
             side: Side::Bid,
             price: Price::new(50).unwrap(),
             qty: Qty::new(3).unwrap(),
@@ -343,21 +346,14 @@ mod tests {
         assert_eq!(oms.open_orders(), 1);
         oms.on_execution_report(&build_report(
             id,
-            &Symbol::new("SOL-USD").unwrap(),
+            symbol,
             Side::Bid,
             OrderStatus::Accepted,
             0,
             2,
         ));
 
-        let fill = build_report(
-            id,
-            &Symbol::new("SOL-USD").unwrap(),
-            Side::Bid,
-            OrderStatus::Filled,
-            3,
-            3,
-        );
+        let fill = build_report(id, symbol, Side::Bid, OrderStatus::Filled, 3, 3);
         oms.on_execution_report(&fill);
         oms.on_execution_report(&fill);
 

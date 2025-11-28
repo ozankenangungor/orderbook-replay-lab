@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use engine::Engine;
-use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
+use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, SymbolTable};
 use metrics::{LatencyStats, ThroughputTracker};
 use oms::Oms;
 use orderbook::OrderBook;
@@ -177,13 +177,14 @@ fn run_replay(
     limit: Option<u64>,
     format: LogFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let symbol = Symbol::new(symbol)?;
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.try_intern(symbol)?;
     let format = match format {
         LogFormat::Jsonl => replay::ReplayFormat::Jsonl,
         LogFormat::Bin => replay::ReplayFormat::Bin,
     };
-    let mut reader = ReplayReader::open_with_format(input, format)?;
-    let mut book = OrderBook::new(symbol.clone());
+    let mut reader = ReplayReader::open_with_format_and_symbols(input, format, symbols)?;
+    let mut book = OrderBook::new(symbol);
     let mut latency = LatencyStats::new();
     let mut throughput = ThroughputTracker::new(Duration::from_secs(1));
 
@@ -250,7 +251,8 @@ fn run_gen(
     snapshot_first: bool,
     format: LogFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let symbol = Symbol::new(symbol)?;
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.try_intern(symbol)?;
     let file = std::fs::File::create(output)?;
     let mut writer = BufWriter::new(file);
     let mut rng = StdRng::seed_from_u64(seed);
@@ -271,11 +273,11 @@ fn run_gen(
 
         let snapshot = MarketEvent::L2Snapshot {
             ts_ns,
-            symbol: symbol.clone(),
+            symbol,
             bids,
             asks,
         };
-        write_event(&mut writer, &snapshot, format)?;
+        write_event(&mut writer, &snapshot, format, &symbols)?;
         ts_ns += 1;
     }
 
@@ -302,10 +304,10 @@ fn run_gen(
         };
         let event = MarketEvent::L2Delta {
             ts_ns: ts_ns + idx,
-            symbol: symbol.clone(),
+            symbol,
             updates: vec![update],
         };
-        write_event(&mut writer, &event, format)?;
+        write_event(&mut writer, &event, format, &symbols)?;
     }
 
     writer.flush()?;
@@ -322,14 +324,15 @@ fn run_simulate(
     timer_interval_ns: u64,
     format: LogFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let symbol = Symbol::new(symbol)?;
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.try_intern(symbol)?;
     let format = match format {
         LogFormat::Jsonl => replay::ReplayFormat::Jsonl,
         LogFormat::Bin => replay::ReplayFormat::Bin,
     };
 
-    let mut reader = ReplayReader::open_with_format(input, format)?;
-    let shared_book = Rc::new(RefCell::new(OrderBook::new(symbol.clone())));
+    let mut reader = ReplayReader::open_with_format_and_symbols(input, format, symbols)?;
+    let shared_book = Rc::new(RefCell::new(OrderBook::new(symbol)));
     let sim_venue = SimVenue::new(shared_book.clone(), 0, 0);
     let counters = Rc::new(RefCell::new(VenueCounters::default()));
     let venue = CountingVenue::new(sim_venue, counters.clone());
@@ -363,7 +366,7 @@ fn run_simulate(
                     break;
                 }
                 last_tick = last_tick.saturating_add(timer_interval_ns);
-                engine.on_timer(last_tick, &symbol);
+                engine.on_timer(last_tick, symbol);
                 ticks_processed += 1;
             }
             last_tick_ts_ns = Some(last_tick);
@@ -397,9 +400,9 @@ fn run_simulate(
     println!("events_applied_to_book={}", events_applied);
     println!("orders_sent={}", counts.orders_sent);
     println!("fills_count={}", counts.fills_count);
-    println!("final_position_lots={}", engine.position_lots(&symbol));
-    println!("realized_pnl_ticks={}", engine.realized_pnl_ticks(&symbol));
-    println!("fees_paid_ticks={}", engine.fees_paid_ticks(&symbol));
+    println!("final_position_lots={}", engine.position_lots(symbol));
+    println!("realized_pnl_ticks={}", engine.realized_pnl_ticks(symbol));
+    println!("fees_paid_ticks={}", engine.fees_paid_ticks(symbol));
     println!("throughput_windowed={:.2} events/sec", throughput_windowed);
     println!("throughput_overall={:.2} events/sec", throughput_overall);
     println!("latency={}", engine.latency_stats().summary_string());
@@ -472,14 +475,15 @@ fn write_event(
     writer: &mut BufWriter<std::fs::File>,
     event: &MarketEvent,
     format: LogFormat,
+    symbols: &SymbolTable,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match format {
         LogFormat::Jsonl => {
-            let line = codec::encode_event_json_line(event)?;
+            let line = codec::encode_event_json_line(event, symbols)?;
             writeln!(writer, "{}", line)?;
         }
         LogFormat::Bin => {
-            let record = codec::encode_event_bin_record(event)?;
+            let record = codec::encode_event_bin_record(event, symbols)?;
             writer.write_all(&record)?;
         }
     }

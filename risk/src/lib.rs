@@ -180,11 +180,11 @@ fn is_order_intent(intent: &Intent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lob_core::{Price, Qty, Side, Symbol};
+    use lob_core::{Price, Qty, Side, SymbolId};
     use trading_types::TimeInForce;
 
     fn ctx_with_mid(ts_ns: u64, position_lots: i64) -> ContextSnapshot {
-        let symbol = Symbol::new("BTC-USD").unwrap();
+        let symbol = SymbolId::from_u32(1);
         ContextSnapshot::new(
             ts_ns,
             symbol,
@@ -200,7 +200,7 @@ mod tests {
         let policy = MaxPositionPolicy::new(10);
         let ctx = ctx_with_mid(1, 9);
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("BTC-USD").unwrap(),
+            symbol: SymbolId::from_u32(1),
             side: Side::Bid,
             price: Price::new(101).unwrap(),
             qty: Qty::new(2).unwrap(),
@@ -218,7 +218,7 @@ mod tests {
         let policy = MaxPositionPolicy::new(10);
         let ctx = ctx_with_mid(1, 9);
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("BTC-USD").unwrap(),
+            symbol: SymbolId::from_u32(1),
             side: Side::Ask,
             price: Price::new(101).unwrap(),
             qty: Qty::new(2).unwrap(),
@@ -236,7 +236,7 @@ mod tests {
         let policy = PriceBandPolicy::new(3);
         let ctx = ctx_with_mid(1, 0);
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("BTC-USD").unwrap(),
+            symbol: SymbolId::from_u32(1),
             side: Side::Bid,
             price: Price::new(200).unwrap(),
             qty: Qty::new(1).unwrap(),
@@ -254,7 +254,7 @@ mod tests {
         let policy = RateLimitPolicy::new(2);
         let ctx = ctx_with_mid(1, 0);
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("BTC-USD").unwrap(),
+            symbol: SymbolId::from_u32(1),
             side: Side::Bid,
             price: Price::new(101).unwrap(),
             qty: Qty::new(1).unwrap(),

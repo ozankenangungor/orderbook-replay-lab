@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use lob_core::{MarketEvent, Price, Qty, Side, Symbol};
+use lob_core::{MarketEvent, Price, Qty, Side, SymbolId};
 
 #[derive(Debug, Clone)]
 pub struct OrderBook {
-    symbol: Symbol,
+    symbol: SymbolId,
     bids: BTreeMap<Price, Qty>,
     asks: BTreeMap<Price, Qty>,
     best_bid_cache: Option<(Price, Qty)>,
@@ -12,7 +12,7 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
-    pub fn new(symbol: Symbol) -> Self {
+    pub fn new(symbol: SymbolId) -> Self {
         Self {
             symbol,
             bids: BTreeMap::new(),
@@ -141,23 +141,23 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
+    use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, SymbolId};
 
-    fn delta(symbol: &Symbol, updates: Vec<LevelUpdate>) -> MarketEvent {
+    fn delta(symbol: SymbolId, updates: Vec<LevelUpdate>) -> MarketEvent {
         MarketEvent::L2Delta {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             updates,
         }
     }
 
     #[test]
     fn insert_update_remove_levels() {
-        let symbol = Symbol::new("BTC-USD").unwrap();
-        let mut book = OrderBook::new(symbol.clone());
+        let symbol = SymbolId::from_u32(1);
+        let mut book = OrderBook::new(symbol);
 
         assert!(book.apply(&delta(
-            &symbol,
+            symbol,
             vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
@@ -170,7 +170,7 @@ mod tests {
         );
 
         assert!(book.apply(&delta(
-            &symbol,
+            symbol,
             vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
@@ -183,7 +183,7 @@ mod tests {
         );
 
         assert!(book.apply(&delta(
-            &symbol,
+            symbol,
             vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
@@ -195,11 +195,11 @@ mod tests {
 
     #[test]
     fn best_bid_ask_correctness() {
-        let symbol = Symbol::new("ETH-USD").unwrap();
-        let mut book = OrderBook::new(symbol.clone());
+        let symbol = SymbolId::from_u32(2);
+        let mut book = OrderBook::new(symbol);
 
         assert!(book.apply(&delta(
-            &symbol,
+            symbol,
             vec![
                 LevelUpdate {
                     side: Side::Bid,
@@ -237,12 +237,12 @@ mod tests {
 
     #[test]
     fn snapshot_then_deltas_update_best_levels() {
-        let symbol = Symbol::new("SNAP-USD").unwrap();
-        let mut book = OrderBook::new(symbol.clone());
+        let symbol = SymbolId::from_u32(3);
+        let mut book = OrderBook::new(symbol);
 
         assert!(book.apply(&MarketEvent::L2Snapshot {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             bids: vec![
                 (Price::new(100).unwrap(), Qty::new(1).unwrap()),
                 (Price::new(99).unwrap(), Qty::new(2).unwrap()),
@@ -263,7 +263,7 @@ mod tests {
         );
 
         assert!(book.apply(&delta(
-            &symbol,
+            symbol,
             vec![
                 LevelUpdate {
                     side: Side::Bid,
@@ -290,11 +290,11 @@ mod tests {
 
     #[test]
     fn best_bid_less_than_best_ask_invariant() {
-        let symbol = Symbol::new("SOL-USD").unwrap();
-        let mut book = OrderBook::new(symbol.clone());
+        let symbol = SymbolId::from_u32(4);
+        let mut book = OrderBook::new(symbol);
 
         assert!(book.apply(&delta(
-            &symbol,
+            symbol,
             vec![
                 LevelUpdate {
                     side: Side::Bid,
@@ -333,8 +333,8 @@ mod tests {
         fn prop_best_levels_follow_updates(
             updates in proptest::collection::vec(update_strategy(), 0..=128),
         ) {
-            let symbol = Symbol::new("PROP-USD").unwrap();
-            let mut book = OrderBook::new(symbol.clone());
+            let symbol = SymbolId::from_u32(5);
+            let mut book = OrderBook::new(symbol);
             let mut bids: BTreeMap<i64, i64> = BTreeMap::new();
             let mut asks: BTreeMap<i64, i64> = BTreeMap::new();
 
@@ -347,7 +347,7 @@ mod tests {
                 };
                 let applied = book.apply(&MarketEvent::L2Delta {
                     ts_ns: 1,
-                    symbol: symbol.clone(),
+                    symbol,
                     updates: vec![update],
                 });
                 prop_assert!(applied);

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use lob_core::MarketEvent;
+use lob_core::{MarketEvent, SymbolTable};
 
 #[derive(Debug, Error)]
 pub enum ReplayError {
@@ -25,12 +25,14 @@ pub struct ReplayReader {
     format: ReplayFormat,
     buffer: String,
     bin_buf: Vec<u8>,
+    symbols: SymbolTable,
 }
 
 #[cfg(feature = "mmap")]
 pub struct MmapReplayReader {
     mmap: memmap2::Mmap,
     pos: usize,
+    symbols: SymbolTable,
 }
 
 impl ReplayReader {
@@ -39,12 +41,21 @@ impl ReplayReader {
     }
 
     pub fn open_with_format(path: &Path, format: ReplayFormat) -> Result<Self, ReplayError> {
+        Self::open_with_format_and_symbols(path, format, SymbolTable::new())
+    }
+
+    pub fn open_with_format_and_symbols(
+        path: &Path,
+        format: ReplayFormat,
+        symbols: SymbolTable,
+    ) -> Result<Self, ReplayError> {
         let file = File::open(path)?;
         Ok(Self {
             reader: BufReader::with_capacity(64 * 1024, file),
             format,
             buffer: String::with_capacity(4096),
             bin_buf: Vec::with_capacity(4096),
+            symbols,
         })
     }
 
@@ -61,7 +72,7 @@ impl ReplayReader {
         if bytes == 0 {
             return Ok(None);
         }
-        let event = codec::decode_event_json_line(&self.buffer)?;
+        let event = codec::decode_event_json_line(&self.buffer, &mut self.symbols)?;
         Ok(Some(event))
     }
 
@@ -119,7 +130,7 @@ impl ReplayReader {
                 read += n;
             }
 
-            let event = codec::decode_event_bin_record(&self.bin_buf)?;
+            let event = codec::decode_event_bin_record(&self.bin_buf, &mut self.symbols)?;
             Ok(Some(event))
         } else {
             let payload_len = u32::from_le_bytes(prefix_buf) as usize;
@@ -137,7 +148,7 @@ impl ReplayReader {
                 read += n;
             }
 
-            let event = codec::decode_event_bin_payload(&self.bin_buf)?;
+            let event = codec::decode_event_bin_payload(&self.bin_buf, &mut self.symbols)?;
             Ok(Some(event))
         }
     }
@@ -146,9 +157,17 @@ impl ReplayReader {
 #[cfg(feature = "mmap")]
 impl MmapReplayReader {
     pub fn open(path: &Path) -> Result<Self, ReplayError> {
+        Self::open_with_symbols(path, SymbolTable::new())
+    }
+
+    pub fn open_with_symbols(path: &Path, symbols: SymbolTable) -> Result<Self, ReplayError> {
         let file = File::open(path)?;
         let mmap = unsafe { memmap2::Mmap::map(&file)? };
-        Ok(Self { mmap, pos: 0 })
+        Ok(Self {
+            mmap,
+            pos: 0,
+            symbols,
+        })
     }
 
     pub fn next_event(&mut self) -> Result<Option<MarketEvent>, ReplayError> {
@@ -192,7 +211,7 @@ impl MmapReplayReader {
 
             let record = &self.mmap[self.pos..self.pos + record_len];
             self.pos += record_len;
-            let event = codec::decode_event_bin_record(record)?;
+            let event = codec::decode_event_bin_record(record, &mut self.symbols)?;
             Ok(Some(event))
         } else {
             let payload_len = u32::from_le_bytes(prefix) as usize;
@@ -206,7 +225,7 @@ impl MmapReplayReader {
             }
             let payload = &self.mmap[self.pos + 4..self.pos + record_len];
             self.pos += record_len;
-            let event = codec::decode_event_bin_payload(payload)?;
+            let event = codec::decode_event_bin_payload(payload, &mut self.symbols)?;
             Ok(Some(event))
         }
     }
@@ -217,7 +236,7 @@ mod tests {
     use std::io::Write;
 
     use super::*;
-    use lob_core::{LevelUpdate, Price, Qty, Side, Symbol};
+    use lob_core::{LevelUpdate, Price, Qty, Side, SymbolId, SymbolTable};
     #[cfg(feature = "bin")]
     use orderbook::OrderBook;
     use tempfile::tempdir;
@@ -226,10 +245,13 @@ mod tests {
     fn reads_in_order_and_handles_eof() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempdir()?;
         let path = dir.path().join("events.log");
+        let mut symbols = SymbolTable::new();
+        let btc = symbols.try_intern("BTC-USD")?;
+        let eth = symbols.try_intern("ETH-USD")?;
 
         let event_one = MarketEvent::L2Delta {
             ts_ns: 1,
-            symbol: Symbol::new("BTC-USD")?,
+            symbol: btc,
             updates: vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100)?,
@@ -239,7 +261,7 @@ mod tests {
 
         let event_two = MarketEvent::L2Delta {
             ts_ns: 2,
-            symbol: Symbol::new("ETH-USD")?,
+            symbol: eth,
             updates: vec![LevelUpdate {
                 side: Side::Ask,
                 price: Price::new(200)?,
@@ -248,8 +270,16 @@ mod tests {
         };
 
         let mut file = File::create(&path)?;
-        writeln!(file, "{}", codec::encode_event_json_line(&event_one)?)?;
-        writeln!(file, "{}", codec::encode_event_json_line(&event_two)?)?;
+        writeln!(
+            file,
+            "{}",
+            codec::encode_event_json_line(&event_one, &symbols)?
+        )?;
+        writeln!(
+            file,
+            "{}",
+            codec::encode_event_json_line(&event_two, &symbols)?
+        )?;
 
         let mut reader = ReplayReader::open(&path)?;
         assert_eq!(reader.next_event()?.unwrap(), event_one);
@@ -267,11 +297,12 @@ mod tests {
         let json_path = dir.path().join("events.jsonl");
         let bin_path = dir.path().join("events.bin");
 
-        let symbol = Symbol::new("TEST-USD")?;
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.try_intern("TEST-USD")?;
         let events = vec![
             MarketEvent::L2Snapshot {
                 ts_ns: 1,
-                symbol: symbol.clone(),
+                symbol,
                 bids: vec![
                     (Price::new(100)?, Qty::new(1)?),
                     (Price::new(99)?, Qty::new(2)?),
@@ -283,7 +314,7 @@ mod tests {
             },
             MarketEvent::L2Delta {
                 ts_ns: 2,
-                symbol: symbol.clone(),
+                symbol,
                 updates: vec![LevelUpdate {
                     side: Side::Bid,
                     price: Price::new(100)?,
@@ -292,7 +323,7 @@ mod tests {
             },
             MarketEvent::L2Delta {
                 ts_ns: 3,
-                symbol: symbol.clone(),
+                symbol,
                 updates: vec![LevelUpdate {
                     side: Side::Ask,
                     price: Price::new(100)?,
@@ -301,7 +332,7 @@ mod tests {
             },
             MarketEvent::L2Delta {
                 ts_ns: 4,
-                symbol: symbol.clone(),
+                symbol,
                 updates: vec![LevelUpdate {
                     side: Side::Bid,
                     price: Price::new(98)?,
@@ -312,20 +343,24 @@ mod tests {
 
         let mut json_file = File::create(&json_path)?;
         for event in &events {
-            writeln!(json_file, "{}", codec::encode_event_json_line(event)?)?;
+            writeln!(
+                json_file,
+                "{}",
+                codec::encode_event_json_line(event, &symbols)?
+            )?;
         }
 
         let mut bin_file = File::create(&bin_path)?;
         for event in &events {
-            let record = codec::encode_event_bin_record(event)?;
+            let record = codec::encode_event_bin_record(event, &symbols)?;
             bin_file.write_all(&record)?;
         }
 
         let mut json_reader = ReplayReader::open_with_format(&json_path, ReplayFormat::Jsonl)?;
         let mut bin_reader = ReplayReader::open_with_format(&bin_path, ReplayFormat::Bin)?;
 
-        let mut json_book = OrderBook::new(symbol.clone());
-        let mut bin_book = OrderBook::new(symbol.clone());
+        let mut json_book = OrderBook::new(symbol);
+        let mut bin_book = OrderBook::new(symbol);
 
         while let Some(event) = json_reader.next_event()? {
             json_book.apply(&event);
@@ -345,11 +380,12 @@ mod tests {
         let dir = tempdir()?;
         let bin_path = dir.path().join("legacy-events.bin");
 
-        let symbol = Symbol::new("LEGACY-USD")?;
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.try_intern("LEGACY-USD")?;
         let events = vec![
             MarketEvent::L2Delta {
                 ts_ns: 1,
-                symbol: symbol.clone(),
+                symbol,
                 updates: vec![LevelUpdate {
                     side: Side::Bid,
                     price: Price::new(100)?,
@@ -369,7 +405,7 @@ mod tests {
 
         let mut file = File::create(&bin_path)?;
         for event in &events {
-            let record = codec::encode_event_bin_record(event)?;
+            let record = codec::encode_event_bin_record(event, &symbols)?;
             let payload = &record[codec::BIN_RECORD_HEADER_LEN..];
             let payload_len = u32::try_from(payload.len())?;
             file.write_all(&payload_len.to_le_bytes())?;
@@ -390,17 +426,18 @@ mod tests {
         let dir = tempdir()?;
         let bin_path = dir.path().join("events.bin");
 
-        let symbol = Symbol::new("MMAP-USD")?;
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.try_intern("MMAP-USD")?;
         let events = vec![
             MarketEvent::L2Snapshot {
                 ts_ns: 1,
-                symbol: symbol.clone(),
+                symbol,
                 bids: vec![(Price::new(100)?, Qty::new(1)?)],
                 asks: vec![(Price::new(101)?, Qty::new(2)?)],
             },
             MarketEvent::L2Delta {
                 ts_ns: 2,
-                symbol: symbol.clone(),
+                symbol,
                 updates: vec![LevelUpdate {
                     side: Side::Bid,
                     price: Price::new(99)?,
@@ -409,7 +446,7 @@ mod tests {
             },
             MarketEvent::L2Delta {
                 ts_ns: 3,
-                symbol: symbol.clone(),
+                symbol,
                 updates: vec![LevelUpdate {
                     side: Side::Ask,
                     price: Price::new(100)?,
@@ -420,7 +457,7 @@ mod tests {
 
         let mut bin_file = File::create(&bin_path)?;
         for event in &events {
-            let record = codec::encode_event_bin_record(event)?;
+            let record = codec::encode_event_bin_record(event, &symbols)?;
             bin_file.write_all(&record)?;
         }
 
@@ -438,6 +475,61 @@ mod tests {
         }
 
         assert_eq!(buf_events, mmap_events);
+
+        Ok(())
+    }
+
+    #[test]
+    fn replay_symbol_mapping_is_deterministic_for_same_stream(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("events.log");
+        let mut symbols = SymbolTable::new();
+        let btc = symbols.try_intern("BTC-USD")?;
+        let eth = symbols.try_intern("ETH-USD")?;
+
+        let events = [
+            MarketEvent::L2Delta {
+                ts_ns: 1,
+                symbol: eth,
+                updates: vec![LevelUpdate {
+                    side: Side::Ask,
+                    price: Price::new(200)?,
+                    qty: Qty::new(1)?,
+                }],
+            },
+            MarketEvent::L2Delta {
+                ts_ns: 2,
+                symbol: btc,
+                updates: vec![LevelUpdate {
+                    side: Side::Bid,
+                    price: Price::new(100)?,
+                    qty: Qty::new(1)?,
+                }],
+            },
+        ];
+
+        let mut file = File::create(&path)?;
+        for event in &events {
+            writeln!(file, "{}", codec::encode_event_json_line(event, &symbols)?)?;
+        }
+
+        fn read_symbols(path: &Path) -> Result<Vec<SymbolId>, ReplayError> {
+            let mut reader = ReplayReader::open(path)?;
+            let mut ids = Vec::new();
+            while let Some(event) = reader.next_event()? {
+                let symbol = match event {
+                    MarketEvent::L2Delta { symbol, .. } => symbol,
+                    MarketEvent::L2Snapshot { symbol, .. } => symbol,
+                };
+                ids.push(symbol);
+            }
+            Ok(ids)
+        }
+
+        let ids_first = read_symbols(&path)?;
+        let ids_second = read_symbols(&path)?;
+        assert_eq!(ids_first, ids_second);
 
         Ok(())
     }

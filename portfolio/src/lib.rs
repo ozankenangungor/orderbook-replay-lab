@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use lob_core::{Price, Qty, Side, Symbol};
+use lob_core::{Price, Qty, Side, SymbolId};
 use trading_types::{ClientOrderId, ExecutionReport, OrderStatus};
 
 #[derive(Debug, Default, Clone)]
@@ -13,7 +13,7 @@ struct Position {
 
 #[derive(Debug, Default)]
 pub struct Portfolio {
-    positions: HashMap<Symbol, Position>,
+    positions: HashMap<SymbolId, Position>,
     filled_by_order: HashMap<ClientOrderId, i64>,
 }
 
@@ -55,7 +55,7 @@ impl Portfolio {
         self.filled_by_order
             .insert(report.client_order_id, reported);
 
-        let pos = self.positions.entry(report.symbol.clone()).or_default();
+        let pos = self.positions.entry(report.symbol).or_default();
         let fill_price = report.last_fill_price.ticks();
         let signed_qty = if report.side == Side::Bid {
             delta_qty
@@ -102,11 +102,11 @@ impl Portfolio {
 
     pub fn mark_to_mid(
         &self,
-        symbol: &Symbol,
+        symbol: SymbolId,
         best_bid: Option<(Price, Qty)>,
         best_ask: Option<(Price, Qty)>,
     ) -> Option<i128> {
-        let pos = self.positions.get(symbol)?;
+        let pos = self.positions.get(&symbol)?;
         let (bid, ask) = match (best_bid, best_ask) {
             (Some((bid, _)), Some((ask, _))) => (bid.ticks(), ask.ticks()),
             _ => return None,
@@ -117,23 +117,23 @@ impl Portfolio {
         Some(unrealized)
     }
 
-    pub fn position_lots(&self, symbol: &Symbol) -> i64 {
+    pub fn position_lots(&self, symbol: SymbolId) -> i64 {
         self.positions
-            .get(symbol)
+            .get(&symbol)
             .map(|pos| pos.position_lots)
             .unwrap_or(0)
     }
 
-    pub fn realized_pnl_ticks(&self, symbol: &Symbol) -> i128 {
+    pub fn realized_pnl_ticks(&self, symbol: SymbolId) -> i128 {
         self.positions
-            .get(symbol)
+            .get(&symbol)
             .map(|pos| pos.realized_pnl_ticks)
             .unwrap_or(0)
     }
 
-    pub fn fees_paid_ticks(&self, symbol: &Symbol) -> i128 {
+    pub fn fees_paid_ticks(&self, symbol: SymbolId) -> i128 {
         self.positions
-            .get(symbol)
+            .get(&symbol)
             .map(|pos| pos.fees_paid_ticks)
             .unwrap_or(0)
     }
@@ -146,7 +146,7 @@ mod tests {
 
     fn report(
         client_order_id: ClientOrderId,
-        symbol: &Symbol,
+        symbol: SymbolId,
         qty: i64,
         price: i64,
         fee_ticks: i64,
@@ -160,19 +160,19 @@ mod tests {
             last_fill_price: Price::new(price).unwrap(),
             fee_ticks,
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             side,
         }
     }
 
     #[test]
     fn buy_then_sell_realizes_profit() {
-        let symbol = Symbol::new("BTC-USD").unwrap();
+        let symbol = SymbolId::from_u32(1);
         let mut portfolio = Portfolio::new();
 
         portfolio.on_execution_report(&report(
             ClientOrderId(1),
-            &symbol,
+            symbol,
             2,
             100,
             0,
@@ -181,7 +181,7 @@ mod tests {
         ));
         portfolio.on_execution_report(&report(
             ClientOrderId(2),
-            &symbol,
+            symbol,
             2,
             110,
             0,
@@ -189,18 +189,18 @@ mod tests {
             lob_core::Side::Ask,
         ));
 
-        assert_eq!(portfolio.position_lots(&symbol), 0);
-        assert_eq!(portfolio.realized_pnl_ticks(&symbol), 20);
+        assert_eq!(portfolio.position_lots(symbol), 0);
+        assert_eq!(portfolio.realized_pnl_ticks(symbol), 20);
     }
 
     #[test]
     fn fees_reduce_pnl() {
-        let symbol = Symbol::new("ETH-USD").unwrap();
+        let symbol = SymbolId::from_u32(2);
         let mut portfolio = Portfolio::new();
 
         portfolio.on_execution_report(&report(
             ClientOrderId(1),
-            &symbol,
+            symbol,
             1,
             100,
             2,
@@ -209,7 +209,7 @@ mod tests {
         ));
         portfolio.on_execution_report(&report(
             ClientOrderId(2),
-            &symbol,
+            symbol,
             1,
             105,
             1,
@@ -217,18 +217,18 @@ mod tests {
             lob_core::Side::Ask,
         ));
 
-        assert_eq!(portfolio.realized_pnl_ticks(&symbol), 5);
-        assert_eq!(portfolio.fees_paid_ticks(&symbol), 3);
+        assert_eq!(portfolio.realized_pnl_ticks(symbol), 5);
+        assert_eq!(portfolio.fees_paid_ticks(symbol), 3);
     }
 
     #[test]
     fn mark_to_mid_uses_mid_price() {
-        let symbol = Symbol::new("SOL-USD").unwrap();
+        let symbol = SymbolId::from_u32(3);
         let mut portfolio = Portfolio::new();
 
         portfolio.on_execution_report(&report(
             ClientOrderId(1),
-            &symbol,
+            symbol,
             2,
             100,
             0,
@@ -238,7 +238,7 @@ mod tests {
 
         let unrealized = portfolio
             .mark_to_mid(
-                &symbol,
+                symbol,
                 Some((Price::new(104).unwrap(), Qty::new(1).unwrap())),
                 Some((Price::new(106).unwrap(), Qty::new(1).unwrap())),
             )
@@ -248,13 +248,13 @@ mod tests {
 
     #[test]
     fn cumulative_partial_fills_use_delta_per_report() {
-        let symbol = Symbol::new("AVAX-USD").unwrap();
+        let symbol = SymbolId::from_u32(4);
         let mut portfolio = Portfolio::new();
         let id = ClientOrderId(7);
 
         portfolio.on_execution_report(&report(
             id,
-            &symbol,
+            symbol,
             1,
             100,
             1,
@@ -263,7 +263,7 @@ mod tests {
         ));
         portfolio.on_execution_report(&report(
             id,
-            &symbol,
+            symbol,
             3,
             101,
             1,
@@ -272,7 +272,7 @@ mod tests {
         ));
         portfolio.on_execution_report(&report(
             id,
-            &symbol,
+            symbol,
             5,
             102,
             1,
@@ -280,19 +280,19 @@ mod tests {
             lob_core::Side::Bid,
         ));
 
-        assert_eq!(portfolio.position_lots(&symbol), 5);
-        assert_eq!(portfolio.fees_paid_ticks(&symbol), 3);
+        assert_eq!(portfolio.position_lots(symbol), 5);
+        assert_eq!(portfolio.fees_paid_ticks(symbol), 3);
     }
 
     #[test]
     fn fees_sum_across_cumulative_partial_fills() {
-        let symbol = Symbol::new("MATIC-USD").unwrap();
+        let symbol = SymbolId::from_u32(5);
         let mut portfolio = Portfolio::new();
         let id = ClientOrderId(42);
 
         portfolio.on_execution_report(&report(
             id,
-            &symbol,
+            symbol,
             1,
             100,
             2,
@@ -301,7 +301,7 @@ mod tests {
         ));
         portfolio.on_execution_report(&report(
             id,
-            &symbol,
+            symbol,
             2,
             101,
             2,
@@ -310,7 +310,7 @@ mod tests {
         ));
         portfolio.on_execution_report(&report(
             id,
-            &symbol,
+            symbol,
             3,
             102,
             2,
@@ -318,7 +318,7 @@ mod tests {
             lob_core::Side::Bid,
         ));
 
-        assert_eq!(portfolio.position_lots(&symbol), 3);
-        assert_eq!(portfolio.fees_paid_ticks(&symbol), 6);
+        assert_eq!(portfolio.position_lots(symbol), 3);
+        assert_eq!(portfolio.fees_paid_ticks(symbol), 6);
     }
 }

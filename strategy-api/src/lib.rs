@@ -1,10 +1,10 @@
-use lob_core::{MarketEvent, Price, Qty, Symbol};
+use lob_core::{MarketEvent, Price, Qty, SymbolId};
 use trading_types::{ExecutionReport, Intent};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextSnapshot {
     pub ts_ns: u64,
-    pub symbol: Symbol,
+    pub symbol: SymbolId,
     pub best_bid: Option<(Price, Qty)>,
     pub best_ask: Option<(Price, Qty)>,
     pub position_lots: i64,
@@ -15,7 +15,7 @@ pub struct ContextSnapshot {
 impl ContextSnapshot {
     pub fn new(
         ts_ns: u64,
-        symbol: Symbol,
+        symbol: SymbolId,
         best_bid: Option<(Price, Qty)>,
         best_ask: Option<(Price, Qty)>,
         position_lots: i64,

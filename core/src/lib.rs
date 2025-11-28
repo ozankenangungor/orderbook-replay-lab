@@ -1,11 +1,9 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::str::FromStr;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -57,129 +55,58 @@ impl FromStr for Side {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SymbolId(u32);
 
 impl SymbolId {
+    pub const fn from_u32(raw: u32) -> Self {
+        Self(raw)
+    }
+
     pub fn as_u32(self) -> u32 {
         self.0
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Symbol {
-    id: SymbolId,
-    value: Arc<str>,
-}
-
-#[derive(Default)]
-struct SymbolInterner {
+#[derive(Debug, Default, Clone)]
+pub struct SymbolTable {
     by_text: HashMap<Arc<str>, SymbolId>,
     by_id: Vec<Arc<str>>,
 }
 
-impl SymbolInterner {
-    fn intern(&mut self, value: &str) -> (SymbolId, Arc<str>) {
-        if let Some(symbol_id) = self.by_text.get(value).copied() {
-            let index = symbol_id.as_u32() as usize;
-            if let Some(interned) = self.by_id.get(index) {
-                return (symbol_id, Arc::clone(interned));
-            }
+impl SymbolTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn intern(&mut self, value: &str) -> SymbolId {
+        let trimmed = value.trim();
+        if let Some(symbol_id) = self.by_text.get(trimmed).copied() {
+            return symbol_id;
         }
 
-        let interned: Arc<str> = Arc::from(value);
+        let interned: Arc<str> = Arc::from(trimmed);
         let symbol_id = SymbolId(self.by_id.len() as u32);
         self.by_text.insert(Arc::clone(&interned), symbol_id);
-        self.by_id.push(Arc::clone(&interned));
-        (symbol_id, interned)
+        self.by_id.push(interned);
+        symbol_id
     }
-}
 
-fn with_symbol_interner<R>(f: impl FnOnce(&mut SymbolInterner) -> R) -> R {
-    static SYMBOL_INTERNER: OnceLock<RwLock<SymbolInterner>> = OnceLock::new();
-    let interner = SYMBOL_INTERNER.get_or_init(|| RwLock::new(SymbolInterner::default()));
-    let mut guard = match interner.write() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    f(&mut guard)
-}
-
-impl Symbol {
-    pub fn new<S: AsRef<str>>(value: S) -> Result<Self, CoreError> {
-        let value = value.as_ref();
+    pub fn try_intern(&mut self, value: &str) -> Result<SymbolId, CoreError> {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             return Err(CoreError::InvalidSymbol(value.to_string()));
         }
-
-        let (id, interned) = with_symbol_interner(|interner| interner.intern(trimmed));
-        Ok(Self {
-            id,
-            value: interned,
-        })
+        Ok(self.intern(trimmed))
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.value
+    pub fn try_resolve(&self, id: SymbolId) -> Option<&str> {
+        self.by_id.get(id.as_u32() as usize).map(Arc::as_ref)
     }
 
-    pub fn id(&self) -> SymbolId {
-        self.id
-    }
-}
-
-impl PartialEq for Symbol {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-    }
-}
-
-impl Eq for Symbol {}
-
-impl Hash for Symbol {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.id.hash(state);
-    }
-}
-
-impl fmt::Display for Symbol {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.value)
-    }
-}
-
-impl FromStr for Symbol {
-    type Err = CoreError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Symbol::new(s)
-    }
-}
-
-impl AsRef<str> for Symbol {
-    fn as_ref(&self) -> &str {
-        &self.value
-    }
-}
-
-impl Serialize for Symbol {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for Symbol {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Cow::<str>::deserialize(deserializer)?;
-        Symbol::new(value.as_ref()).map_err(serde::de::Error::custom)
+    pub fn resolve(&self, id: SymbolId) -> &str {
+        self.try_resolve(id).unwrap_or("<unknown>")
     }
 }
 
@@ -243,12 +170,12 @@ impl LevelUpdate {
 pub enum MarketEvent {
     L2Delta {
         ts_ns: u64,
-        symbol: Symbol,
+        symbol: SymbolId,
         updates: Vec<LevelUpdate>,
     },
     L2Snapshot {
         ts_ns: u64,
-        symbol: Symbol,
+        symbol: SymbolId,
         bids: Vec<(Price, Qty)>,
         asks: Vec<(Price, Qty)>,
     },
@@ -283,17 +210,21 @@ mod tests {
     }
 
     #[test]
-    fn symbol_requires_non_empty() {
-        assert!(Symbol::new("BTC-USD").is_ok());
-        assert!(Symbol::new("   ").is_err());
+    fn symbol_table_interning_is_deterministic() {
+        let mut table = SymbolTable::new();
+        let btc = table.try_intern("BTC-USD").unwrap();
+        let btc_again = table.try_intern(" BTC-USD ").unwrap();
+        let eth = table.try_intern("ETH-USD").unwrap();
+        assert_eq!(btc, btc_again);
+        assert_ne!(btc, eth);
+        assert_eq!(table.resolve(btc), "BTC-USD");
+        assert_eq!(table.resolve(eth), "ETH-USD");
     }
 
     #[test]
-    fn symbol_interning_reuses_symbol_id() {
-        let a = Symbol::new("BTC-USD").unwrap();
-        let b = Symbol::new(" BTC-USD ").unwrap();
-        assert_eq!(a.id(), b.id());
-        assert_eq!(a, b);
+    fn symbol_table_rejects_empty_symbols() {
+        let mut table = SymbolTable::new();
+        assert!(table.try_intern("   ").is_err());
     }
 
     #[test]

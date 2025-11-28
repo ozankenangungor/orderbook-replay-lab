@@ -89,7 +89,7 @@ impl TwapStrategy {
         *next_ts = ctx.ts_ns.saturating_add(self.interval_ns.max(1));
 
         out.push(Intent::PlaceLimit {
-            symbol: ctx.symbol.clone(),
+            symbol: ctx.symbol,
             side,
             price,
             qty,
@@ -195,7 +195,7 @@ impl MmStrategy {
             }
         } else if !self.pending_bid {
             out.push(Intent::PlaceLimit {
-                symbol: ctx.symbol.clone(),
+                symbol: ctx.symbol,
                 side: Side::Bid,
                 price: bid_price,
                 qty,
@@ -217,7 +217,7 @@ impl MmStrategy {
             }
         } else if !self.pending_ask {
             out.push(Intent::PlaceLimit {
-                symbol: ctx.symbol.clone(),
+                symbol: ctx.symbol,
                 side: Side::Ask,
                 price: ask_price,
                 qty,
@@ -351,11 +351,11 @@ impl Strategy for MmStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lob_core::Symbol;
+    use lob_core::SymbolId;
 
     fn ctx_with_book(
         ts_ns: u64,
-        symbol: Symbol,
+        symbol: SymbolId,
         best_bid: i64,
         best_ask: i64,
         position_lots: i64,
@@ -373,10 +373,10 @@ mod tests {
     #[test]
     fn noop_strategy_returns_empty_intents() {
         let mut strategy = NoopStrategy;
-        let symbol = Symbol::new("TEST-USD").unwrap();
+        let symbol = SymbolId::from_u32(1);
         let ctx = ContextSnapshot::new(
             1,
-            symbol.clone(),
+            symbol,
             Some((Price::new(100).unwrap(), Qty::new(1).unwrap())),
             Some((Price::new(101).unwrap(), Qty::new(1).unwrap())),
             0,
@@ -397,13 +397,13 @@ mod tests {
 
     #[test]
     fn twap_emits_until_target_reached() {
-        let symbol = Symbol::new("TWAP-USD").unwrap();
+        let symbol = SymbolId::from_u32(2);
         let mut strategy = TwapStrategy::new(3, 0, 1);
 
-        let mut ctx = ctx_with_book(1, symbol.clone(), 100, 102, 0);
+        let mut ctx = ctx_with_book(1, symbol, 100, 102, 0);
         let event = MarketEvent::L2Delta {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             updates: vec![],
         };
         let mut intents = Vec::new();
@@ -427,7 +427,7 @@ mod tests {
             last_fill_price: Price::new(102).unwrap(),
             fee_ticks: 0,
             ts_ns: 2,
-            symbol: symbol.clone(),
+            symbol,
             side: Side::Bid,
         };
         strategy.on_execution_report(&ctx, &report, &mut intents);
@@ -470,12 +470,12 @@ mod tests {
 
     #[test]
     fn mm_quotes_both_sides_and_skews_with_inventory() {
-        let symbol = Symbol::new("MM-USD").unwrap();
+        let symbol = SymbolId::from_u32(3);
         let mut mm = MmStrategy::new(2, 1, 1);
-        let ctx = ctx_with_book(1, symbol.clone(), 100, 102, 0);
+        let ctx = ctx_with_book(1, symbol, 100, 102, 0);
         let event = MarketEvent::L2Delta {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             updates: vec![],
         };
 

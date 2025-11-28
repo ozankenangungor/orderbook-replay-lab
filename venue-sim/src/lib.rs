@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use lob_core::{Price, Qty, Side, Symbol};
+use lob_core::{Price, Qty, Side, SymbolId};
 use oms::OrderRequest;
 use orderbook::OrderBook;
 use trading_types::{ClientOrderId, ExecutionReport, OrderStatus, OrderType};
@@ -26,7 +26,7 @@ fn zero_qty() -> Qty {
 
 #[derive(Debug, Clone)]
 struct LiveOrder {
-    symbol: Symbol,
+    symbol: SymbolId,
     side: Side,
     price: Option<Price>,
     qty: Qty,
@@ -104,7 +104,7 @@ impl SimVenue {
             last_fill_price: ack_price,
             fee_ticks: 0,
             ts_ns: self.next_ts(),
-            symbol: order.symbol.clone(),
+            symbol: order.symbol,
             side: order.side,
         });
 
@@ -116,14 +116,14 @@ impl SimVenue {
                 last_fill_price: fill_price,
                 fee_ticks: self.taker_fee_ticks,
                 ts_ns: self.next_ts(),
-                symbol: order.symbol.clone(),
+                symbol: order.symbol,
                 side: order.side,
             });
         } else if order.order_type == OrderType::Limit {
             self.live_orders.insert(
                 order.client_order_id,
                 LiveOrder {
-                    symbol: order.symbol.clone(),
+                    symbol: order.symbol,
                     side: order.side,
                     price: order.price,
                     qty: order.qty,
@@ -175,7 +175,7 @@ impl SimVenue {
             last_fill_price: new_price,
             fee_ticks: 0,
             ts_ns: self.next_ts(),
-            symbol: order.symbol.clone(),
+            symbol: order.symbol,
             side: order.side,
         });
 
@@ -220,7 +220,7 @@ impl SimVenue {
             last_fill_price: order.price.unwrap_or_else(zero_price),
             fee_ticks: 0,
             ts_ns: self.next_ts(),
-            symbol: order.symbol.clone(),
+            symbol: order.symbol,
             side: order.side,
         }
     }
