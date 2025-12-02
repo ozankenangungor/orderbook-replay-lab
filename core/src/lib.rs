@@ -80,6 +80,38 @@ impl SymbolTable {
         Self::default()
     }
 
+    pub fn with_capacity(symbol_capacity: usize) -> Self {
+        Self {
+            by_text: HashMap::with_capacity(symbol_capacity),
+            by_id: Vec::with_capacity(symbol_capacity),
+        }
+    }
+
+    pub fn try_from_symbols<I, S>(symbols: I) -> Result<Self, CoreError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut table = Self::new();
+        for symbol in symbols {
+            table.try_intern(symbol.as_ref())?;
+        }
+        Ok(table)
+    }
+
+    pub fn len(&self) -> usize {
+        self.by_id.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_id.is_empty()
+    }
+
+    pub fn reserve(&mut self, additional: usize) {
+        self.by_text.reserve(additional);
+        self.by_id.reserve(additional);
+    }
+
     pub fn intern(&mut self, value: &str) -> SymbolId {
         let trimmed = value.trim();
         if let Some(symbol_id) = self.by_text.get(trimmed).copied() {
@@ -225,6 +257,24 @@ mod tests {
     fn symbol_table_rejects_empty_symbols() {
         let mut table = SymbolTable::new();
         assert!(table.try_intern("   ").is_err());
+    }
+
+    #[test]
+    fn symbol_table_try_from_symbols_preserves_first_seen_order() {
+        let table = SymbolTable::try_from_symbols(["ETH-USD", "BTC-USD", "ETH-USD"]).unwrap();
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.resolve(SymbolId::from_u32(0)), "ETH-USD");
+        assert_eq!(table.resolve(SymbolId::from_u32(1)), "BTC-USD");
+    }
+
+    #[test]
+    fn symbol_table_reserve_and_is_empty() {
+        let mut table = SymbolTable::with_capacity(4);
+        assert!(table.is_empty());
+        table.reserve(8);
+        let id = table.try_intern("SOL-USD").unwrap();
+        assert_eq!(id, SymbolId::from_u32(0));
+        assert!(!table.is_empty());
     }
 
     #[test]
