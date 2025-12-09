@@ -38,6 +38,8 @@ pub struct SimVenue {
     taker_fee_ticks: i64,
     next_ts_ns: u64,
     live_orders: HashMap<ClientOrderId, LiveOrder>,
+    order_scan_ids: Vec<ClientOrderId>,
+    fill_candidates: Vec<(ClientOrderId, Price)>,
 }
 
 impl SimVenue {
@@ -48,6 +50,8 @@ impl SimVenue {
             taker_fee_ticks,
             next_ts_ns: 1,
             live_orders: HashMap::new(),
+            order_scan_ids: Vec::new(),
+            fill_candidates: Vec::new(),
         }
     }
 
@@ -272,15 +276,16 @@ impl ExecutionVenue for SimVenue {
             (book.best_bid(), book.best_ask())
         };
 
-        let mut order_ids: Vec<ClientOrderId> = self.live_orders.keys().copied().collect();
-        order_ids.sort_by_key(|id| id.0);
+        self.order_scan_ids.clear();
+        self.order_scan_ids.extend(self.live_orders.keys().copied());
+        self.order_scan_ids.sort_unstable_by_key(|id| id.0);
 
-        for client_order_id in order_ids {
-            if out.len() >= MAX_PASSIVE_FILLS_PER_EVENT {
+        self.fill_candidates.clear();
+        for client_order_id in &self.order_scan_ids {
+            if self.fill_candidates.len() >= MAX_PASSIVE_FILLS_PER_EVENT {
                 break;
             }
-
-            let Some(order) = self.live_orders.get(&client_order_id).cloned() else {
+            let Some(order) = self.live_orders.get(client_order_id) else {
                 continue;
             };
             let Some(limit_price) = order.price else {
@@ -291,8 +296,14 @@ impl ExecutionVenue for SimVenue {
             else {
                 continue;
             };
+            self.fill_candidates.push((*client_order_id, fill_price));
+        }
 
-            self.live_orders.remove(&client_order_id);
+        let mut fill_candidates = std::mem::take(&mut self.fill_candidates);
+        for (client_order_id, fill_price) in fill_candidates.drain(..) {
+            let Some(order) = self.live_orders.remove(&client_order_id) else {
+                continue;
+            };
             out.push(ExecutionReport {
                 client_order_id,
                 status: OrderStatus::Filled,
@@ -304,5 +315,67 @@ impl ExecutionVenue for SimVenue {
                 side: order.side,
             });
         }
+        self.fill_candidates = fill_candidates;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lob_core::{LevelUpdate, MarketEvent};
+    use oms::OrderRequest as OmsOrderRequest;
+    use trading_types::{OrderRequest as NewOrderRequest, TimeInForce};
+
+    fn place_req(
+        client_order_id: u64,
+        symbol: SymbolId,
+        side: Side,
+        price_ticks: i64,
+        qty_lots: i64,
+    ) -> OmsOrderRequest {
+        OmsOrderRequest::Place(NewOrderRequest {
+            client_order_id: ClientOrderId(client_order_id),
+            symbol,
+            side,
+            order_type: OrderType::Limit,
+            price: Some(Price::new(price_ticks).expect("price")),
+            qty: Qty::new(qty_lots).expect("qty"),
+            tif: TimeInForce::Gtc,
+        })
+    }
+
+    #[test]
+    fn passive_fills_are_emitted_in_client_order_id_order() {
+        let symbol = SymbolId::from_u32(1);
+        let book = Rc::new(RefCell::new(OrderBook::new(symbol)));
+        let mut venue = SimVenue::new(book.clone(), 0, 0);
+
+        assert!(book.borrow_mut().apply(&MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol,
+            bids: vec![(Price::new(99).expect("price"), Qty::new(1).expect("qty"))],
+            asks: vec![(Price::new(110).expect("price"), Qty::new(1).expect("qty"))],
+        }));
+
+        let mut out = Vec::new();
+        venue.submit(&place_req(20, symbol, Side::Bid, 105, 1), &mut out);
+        venue.submit(&place_req(10, symbol, Side::Bid, 106, 1), &mut out);
+        out.clear();
+
+        assert!(book.borrow_mut().apply(&MarketEvent::L2Delta {
+            ts_ns: 2,
+            symbol,
+            updates: vec![LevelUpdate {
+                side: Side::Ask,
+                price: Price::new(104).expect("price"),
+                qty: Qty::new(1).expect("qty"),
+            }],
+        }));
+
+        venue.on_book_update(&mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].client_order_id, ClientOrderId(10));
+        assert_eq!(out[1].client_order_id, ClientOrderId(20));
+        assert!(out.iter().all(|r| r.status == OrderStatus::Filled));
     }
 }
