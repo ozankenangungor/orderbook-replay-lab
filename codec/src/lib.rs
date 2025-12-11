@@ -48,7 +48,7 @@ pub enum CodecError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
-enum JsonMarketEvent {
+enum JsonMarketEventOwned {
     L2Delta {
         ts_ns: u64,
         symbol: String,
@@ -62,47 +62,26 @@ enum JsonMarketEvent {
     },
 }
 
-impl JsonMarketEvent {
-    fn from_core(event: &MarketEvent, symbols: &SymbolTable) -> Result<Self, CodecError> {
-        match event {
-            MarketEvent::L2Delta {
-                ts_ns,
-                symbol,
-                updates,
-            } => {
-                let symbol = symbols
-                    .try_resolve(*symbol)
-                    .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?
-                    .to_string();
-                Ok(Self::L2Delta {
-                    ts_ns: *ts_ns,
-                    symbol,
-                    updates: updates.clone(),
-                })
-            }
-            MarketEvent::L2Snapshot {
-                ts_ns,
-                symbol,
-                bids,
-                asks,
-            } => {
-                let symbol = symbols
-                    .try_resolve(*symbol)
-                    .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?
-                    .to_string();
-                Ok(Self::L2Snapshot {
-                    ts_ns: *ts_ns,
-                    symbol,
-                    bids: bids.clone(),
-                    asks: asks.clone(),
-                })
-            }
-        }
-    }
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+enum JsonMarketEventRef<'a> {
+    L2Delta {
+        ts_ns: u64,
+        symbol: &'a str,
+        updates: &'a [lob_core::LevelUpdate],
+    },
+    L2Snapshot {
+        ts_ns: u64,
+        symbol: &'a str,
+        bids: &'a [(lob_core::Price, lob_core::Qty)],
+        asks: &'a [(lob_core::Price, lob_core::Qty)],
+    },
+}
 
+impl JsonMarketEventOwned {
     fn into_core(self, symbols: &mut SymbolTable) -> Result<MarketEvent, CodecError> {
         match self {
-            JsonMarketEvent::L2Delta {
+            JsonMarketEventOwned::L2Delta {
                 ts_ns,
                 symbol,
                 updates,
@@ -111,7 +90,7 @@ impl JsonMarketEvent {
                 symbol: symbols.try_intern(&symbol)?,
                 updates,
             }),
-            JsonMarketEvent::L2Snapshot {
+            JsonMarketEventOwned::L2Snapshot {
                 ts_ns,
                 symbol,
                 bids,
@@ -126,11 +105,49 @@ impl JsonMarketEvent {
     }
 }
 
+fn encode_event_json_ref<'a>(
+    event: &'a MarketEvent,
+    symbols: &'a SymbolTable,
+) -> Result<JsonMarketEventRef<'a>, CodecError> {
+    match event {
+        MarketEvent::L2Delta {
+            ts_ns,
+            symbol,
+            updates,
+        } => {
+            let symbol = symbols
+                .try_resolve(*symbol)
+                .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?;
+            Ok(JsonMarketEventRef::L2Delta {
+                ts_ns: *ts_ns,
+                symbol,
+                updates,
+            })
+        }
+        MarketEvent::L2Snapshot {
+            ts_ns,
+            symbol,
+            bids,
+            asks,
+        } => {
+            let symbol = symbols
+                .try_resolve(*symbol)
+                .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?;
+            Ok(JsonMarketEventRef::L2Snapshot {
+                ts_ns: *ts_ns,
+                symbol,
+                bids,
+                asks,
+            })
+        }
+    }
+}
+
 pub fn encode_event_json_line(
     event: &MarketEvent,
     symbols: &SymbolTable,
 ) -> Result<String, CodecError> {
-    let wire = JsonMarketEvent::from_core(event, symbols)?;
+    let wire = encode_event_json_ref(event, symbols)?;
     Ok(serde_json::to_string(&wire)?)
 }
 
@@ -144,7 +161,7 @@ pub fn decode_event_json_line(
         return Err(CodecError::EmptyLine);
     }
 
-    let wire: JsonMarketEvent = serde_json::from_str(line)?;
+    let wire: JsonMarketEventOwned = serde_json::from_str(line)?;
     wire.into_core(symbols)
 }
 
@@ -154,7 +171,7 @@ pub fn encode_event_bin_record(
 ) -> Result<Vec<u8>, CodecError> {
     #[cfg(feature = "bin")]
     {
-        let payload = bincode::serialize(&BinMarketEvent::from_core(event, symbols)?)?;
+        let payload = bincode::serialize(&BinMarketEventRef::from_core(event, symbols)?)?;
         let len = u32::try_from(payload.len())
             .map_err(|_| CodecError::BinaryLengthOverflow(payload.len()))?;
         let checksum = crc32fast::hash(&payload);
@@ -246,7 +263,7 @@ pub fn decode_event_bin_payload(
 ) -> Result<MarketEvent, CodecError> {
     #[cfg(feature = "bin")]
     {
-        let event: BinMarketEvent = bincode::deserialize(payload)?;
+        let event: BinMarketEventOwned = bincode::deserialize(payload)?;
         event.into_core(symbols)
     }
     #[cfg(not(feature = "bin"))]
@@ -259,7 +276,7 @@ pub fn decode_event_bin_payload(
 
 #[cfg(feature = "bin")]
 #[derive(Debug, Serialize, Deserialize)]
-enum BinMarketEvent {
+enum BinMarketEventOwned {
     L2Delta {
         ts_ns: u64,
         symbol: String,
@@ -274,8 +291,24 @@ enum BinMarketEvent {
 }
 
 #[cfg(feature = "bin")]
-impl BinMarketEvent {
-    fn from_core(event: &MarketEvent, symbols: &SymbolTable) -> Result<Self, CodecError> {
+#[derive(Debug, Serialize)]
+enum BinMarketEventRef<'a> {
+    L2Delta {
+        ts_ns: u64,
+        symbol: &'a str,
+        updates: &'a [LevelUpdate],
+    },
+    L2Snapshot {
+        ts_ns: u64,
+        symbol: &'a str,
+        bids: &'a [(Price, Qty)],
+        asks: &'a [(Price, Qty)],
+    },
+}
+
+#[cfg(feature = "bin")]
+impl<'a> BinMarketEventRef<'a> {
+    fn from_core(event: &'a MarketEvent, symbols: &'a SymbolTable) -> Result<Self, CodecError> {
         match event {
             MarketEvent::L2Delta {
                 ts_ns,
@@ -284,12 +317,11 @@ impl BinMarketEvent {
             } => {
                 let symbol = symbols
                     .try_resolve(*symbol)
-                    .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?
-                    .to_string();
+                    .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?;
                 Ok(Self::L2Delta {
                     ts_ns: *ts_ns,
                     symbol,
-                    updates: updates.clone(),
+                    updates,
                 })
             }
             MarketEvent::L2Snapshot {
@@ -300,21 +332,23 @@ impl BinMarketEvent {
             } => {
                 let symbol = symbols
                     .try_resolve(*symbol)
-                    .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?
-                    .to_string();
+                    .ok_or(CodecError::UnknownSymbolId(symbol.as_u32()))?;
                 Ok(Self::L2Snapshot {
                     ts_ns: *ts_ns,
                     symbol,
-                    bids: bids.clone(),
-                    asks: asks.clone(),
+                    bids,
+                    asks,
                 })
             }
         }
     }
+}
 
+#[cfg(feature = "bin")]
+impl BinMarketEventOwned {
     fn into_core(self, symbols: &mut SymbolTable) -> Result<MarketEvent, CodecError> {
         match self {
-            BinMarketEvent::L2Delta {
+            BinMarketEventOwned::L2Delta {
                 ts_ns,
                 symbol,
                 updates,
@@ -323,7 +357,7 @@ impl BinMarketEvent {
                 symbol: symbols.try_intern(&symbol)?,
                 updates,
             }),
-            BinMarketEvent::L2Snapshot {
+            BinMarketEventOwned::L2Snapshot {
                 ts_ns,
                 symbol,
                 bids,
