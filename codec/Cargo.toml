@@ -11,5 +11,12 @@ serde = { workspace = true, optional = true }
 bincode = { workspace = true, optional = true }
 crc32fast = { workspace = true, optional = true }
 
+[dev-dependencies]
+criterion = { workspace = true }
+
 [features]
 bin = ["bincode", "serde", "crc32fast"]
+
+[[bench]]
+name = "codec_bench"
+harness = false
