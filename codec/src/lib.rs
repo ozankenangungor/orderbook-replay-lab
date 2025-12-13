@@ -1,11 +1,10 @@
 use thiserror::Error;
 
 use lob_core::{CoreError, MarketEvent, SymbolTable};
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "bin")]
 use lob_core::{LevelUpdate, Price, Qty};
-#[cfg(feature = "bin")]
-use serde::{Deserialize, Serialize};
 
 pub const BIN_RECORD_MAGIC: [u8; 4] = *b"LOB2";
 pub const BIN_RECORD_VERSION: u8 = 1;
@@ -427,6 +426,17 @@ mod tests {
         let mut symbols = SymbolTable::new();
         assert!(decode_event_json_line("", &mut symbols).is_err());
         assert!(decode_event_json_line("{not-json}", &mut symbols).is_err());
+    }
+
+    #[cfg(not(feature = "bin"))]
+    #[test]
+    fn binary_encode_is_disabled_without_bin_feature() {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.try_intern("BTC-USD").unwrap();
+        let event = sample_event(symbol);
+
+        let err = encode_event_bin_record(&event, &symbols).unwrap_err();
+        assert!(matches!(err, CodecError::BinaryUnsupported));
     }
 
     #[cfg(feature = "bin")]
