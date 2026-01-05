@@ -5,7 +5,7 @@ use std::rc::Rc;
 use lob_core::{Price, Qty, Side, SymbolId};
 use oms::OrderRequest;
 use orderbook::OrderBook;
-use trading_types::{ClientOrderId, ExecutionReport, OrderStatus, OrderType};
+use trading_types::{ClientOrderId, ExecutionReport, OrderStatus, OrderType, TimeInForce};
 use venue::ExecutionVenue;
 
 const MAX_PASSIVE_FILLS_PER_EVENT: usize = 1024;
@@ -100,7 +100,51 @@ impl SimVenue {
             },
         };
 
-        let ack_price = crossing_price.or(order.price).unwrap_or_else(zero_price);
+        if crossing_price.is_none() {
+            if order.order_type == OrderType::Market || order.tif == TimeInForce::Fok {
+                out.push(self.rejected(order));
+                return;
+            }
+
+            let resting_price = order.price.unwrap_or_else(zero_price);
+            out.push(ExecutionReport {
+                client_order_id: order.client_order_id,
+                status: OrderStatus::Accepted,
+                filled_qty: zero_qty(),
+                last_fill_price: resting_price,
+                fee_ticks: 0,
+                ts_ns: self.next_ts(),
+                symbol: order.symbol,
+                side: order.side,
+            });
+
+            if order.tif == TimeInForce::Ioc {
+                out.push(ExecutionReport {
+                    client_order_id: order.client_order_id,
+                    status: OrderStatus::Expired,
+                    filled_qty: zero_qty(),
+                    last_fill_price: resting_price,
+                    fee_ticks: 0,
+                    ts_ns: self.next_ts(),
+                    symbol: order.symbol,
+                    side: order.side,
+                });
+            } else {
+                self.live_orders.insert(
+                    order.client_order_id,
+                    LiveOrder {
+                        symbol: order.symbol,
+                        side: order.side,
+                        price: order.price,
+                        qty: order.qty,
+                    },
+                );
+            }
+            return;
+        }
+
+        let fill_price = crossing_price.expect("crossing price present");
+        let ack_price = order.price.unwrap_or(fill_price);
         out.push(ExecutionReport {
             client_order_id: order.client_order_id,
             status: OrderStatus::Accepted,
@@ -111,29 +155,16 @@ impl SimVenue {
             symbol: order.symbol,
             side: order.side,
         });
-
-        if let Some(fill_price) = crossing_price {
-            out.push(ExecutionReport {
-                client_order_id: order.client_order_id,
-                status: OrderStatus::Filled,
-                filled_qty: order.qty,
-                last_fill_price: fill_price,
-                fee_ticks: self.taker_fee_ticks,
-                ts_ns: self.next_ts(),
-                symbol: order.symbol,
-                side: order.side,
-            });
-        } else if order.order_type == OrderType::Limit {
-            self.live_orders.insert(
-                order.client_order_id,
-                LiveOrder {
-                    symbol: order.symbol,
-                    side: order.side,
-                    price: order.price,
-                    qty: order.qty,
-                },
-            );
-        }
+        out.push(ExecutionReport {
+            client_order_id: order.client_order_id,
+            status: OrderStatus::Filled,
+            filled_qty: order.qty,
+            last_fill_price: fill_price,
+            fee_ticks: self.taker_fee_ticks,
+            ts_ns: self.next_ts(),
+            symbol: order.symbol,
+            side: order.side,
+        });
     }
 
     fn handle_replace(
@@ -326,12 +357,13 @@ mod tests {
     use oms::OrderRequest as OmsOrderRequest;
     use trading_types::{OrderRequest as NewOrderRequest, TimeInForce};
 
-    fn place_req(
+    fn place_limit_req(
         client_order_id: u64,
         symbol: SymbolId,
         side: Side,
         price_ticks: i64,
         qty_lots: i64,
+        tif: TimeInForce,
     ) -> OmsOrderRequest {
         OmsOrderRequest::Place(NewOrderRequest {
             client_order_id: ClientOrderId(client_order_id),
@@ -340,7 +372,24 @@ mod tests {
             order_type: OrderType::Limit,
             price: Some(Price::new(price_ticks).expect("price")),
             qty: Qty::new(qty_lots).expect("qty"),
-            tif: TimeInForce::Gtc,
+            tif,
+        })
+    }
+
+    fn place_market_req(
+        client_order_id: u64,
+        symbol: SymbolId,
+        side: Side,
+        qty_lots: i64,
+    ) -> OmsOrderRequest {
+        OmsOrderRequest::Place(NewOrderRequest {
+            client_order_id: ClientOrderId(client_order_id),
+            symbol,
+            side,
+            order_type: OrderType::Market,
+            price: None,
+            qty: Qty::new(qty_lots).expect("qty"),
+            tif: TimeInForce::Ioc,
         })
     }
 
@@ -358,8 +407,14 @@ mod tests {
         }));
 
         let mut out = Vec::new();
-        venue.submit(&place_req(20, symbol, Side::Bid, 105, 1), &mut out);
-        venue.submit(&place_req(10, symbol, Side::Bid, 106, 1), &mut out);
+        venue.submit(
+            &place_limit_req(20, symbol, Side::Bid, 105, 1, TimeInForce::Gtc),
+            &mut out,
+        );
+        venue.submit(
+            &place_limit_req(10, symbol, Side::Bid, 106, 1, TimeInForce::Gtc),
+            &mut out,
+        );
         out.clear();
 
         assert!(book.borrow_mut().apply(&MarketEvent::L2Delta {
@@ -377,5 +432,75 @@ mod tests {
         assert_eq!(out[0].client_order_id, ClientOrderId(10));
         assert_eq!(out[1].client_order_id, ClientOrderId(20));
         assert!(out.iter().all(|r| r.status == OrderStatus::Filled));
+    }
+
+    #[test]
+    fn ioc_order_that_does_not_cross_expires_and_does_not_rest() {
+        let symbol = SymbolId::from_u32(2);
+        let book = Rc::new(RefCell::new(OrderBook::new(symbol)));
+        let mut venue = SimVenue::new(book.clone(), 0, 0);
+        let mut out = Vec::new();
+
+        assert!(book.borrow_mut().apply(&MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol,
+            bids: vec![(Price::new(99).expect("price"), Qty::new(1).expect("qty"))],
+            asks: vec![(Price::new(110).expect("price"), Qty::new(1).expect("qty"))],
+        }));
+
+        venue.submit(
+            &place_limit_req(1, symbol, Side::Bid, 100, 1, TimeInForce::Ioc),
+            &mut out,
+        );
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].status, OrderStatus::Accepted);
+        assert_eq!(out[1].status, OrderStatus::Expired);
+        out.clear();
+
+        assert!(book.borrow_mut().apply(&MarketEvent::L2Delta {
+            ts_ns: 2,
+            symbol,
+            updates: vec![LevelUpdate {
+                side: Side::Ask,
+                price: Price::new(100).expect("price"),
+                qty: Qty::new(1).expect("qty"),
+            }],
+        }));
+        venue.on_book_update(&mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn fok_order_that_does_not_cross_is_rejected() {
+        let symbol = SymbolId::from_u32(3);
+        let book = Rc::new(RefCell::new(OrderBook::new(symbol)));
+        let mut venue = SimVenue::new(book.clone(), 0, 0);
+        let mut out = Vec::new();
+
+        assert!(book.borrow_mut().apply(&MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol,
+            bids: vec![(Price::new(99).expect("price"), Qty::new(1).expect("qty"))],
+            asks: vec![(Price::new(110).expect("price"), Qty::new(1).expect("qty"))],
+        }));
+
+        venue.submit(
+            &place_limit_req(1, symbol, Side::Bid, 100, 1, TimeInForce::Fok),
+            &mut out,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, OrderStatus::Rejected);
+    }
+
+    #[test]
+    fn market_order_without_liquidity_is_rejected() {
+        let symbol = SymbolId::from_u32(4);
+        let book = Rc::new(RefCell::new(OrderBook::new(symbol)));
+        let mut venue = SimVenue::new(book, 0, 0);
+        let mut out = Vec::new();
+
+        venue.submit(&place_market_req(1, symbol, Side::Bid, 1), &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].status, OrderStatus::Rejected);
     }
 }
