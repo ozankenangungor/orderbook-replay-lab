@@ -4,3 +4,5 @@ target/
 *.log
 /data/
 **/__MACOSX/
+**/*.md
+!README.md
