@@ -88,7 +88,8 @@ impl Portfolio {
             let old_avg = pos.avg_entry_price_ticks.unwrap_or(fill_price) as i128;
             let new_avg = (old_avg * old_qty + fill_price as i128 * add_qty) / total_qty;
             pos.avg_entry_price_ticks = Some(new_avg as i64);
-        } else if new_position != 0 {
+        } else if new_position.signum() != pos.position_lots.signum() {
+            // Position direction changed (flip); remaining inventory is opened at the flip fill price.
             pos.avg_entry_price_ticks = Some(fill_price);
         }
 
@@ -320,5 +321,42 @@ mod tests {
 
         assert_eq!(portfolio.position_lots(symbol), 3);
         assert_eq!(portfolio.fees_paid_ticks(symbol), 6);
+    }
+
+    #[test]
+    fn partial_close_keeps_entry_price_for_remaining_position() {
+        let symbol = SymbolId::from_u32(6);
+        let mut portfolio = Portfolio::new();
+
+        portfolio.on_execution_report(&report(
+            ClientOrderId(1),
+            symbol,
+            2,
+            100,
+            0,
+            OrderStatus::Filled,
+            lob_core::Side::Bid,
+        ));
+        portfolio.on_execution_report(&report(
+            ClientOrderId(2),
+            symbol,
+            1,
+            110,
+            0,
+            OrderStatus::Filled,
+            lob_core::Side::Ask,
+        ));
+        portfolio.on_execution_report(&report(
+            ClientOrderId(3),
+            symbol,
+            1,
+            120,
+            0,
+            OrderStatus::Filled,
+            lob_core::Side::Ask,
+        ));
+
+        assert_eq!(portfolio.position_lots(symbol), 0);
+        assert_eq!(portfolio.realized_pnl_ticks(symbol), 30);
     }
 }
