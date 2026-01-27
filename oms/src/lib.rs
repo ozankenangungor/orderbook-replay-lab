@@ -135,15 +135,16 @@ impl Oms {
                         return None;
                     }
                     entry.state = OrderState::PendingNew;
-                    entry.total_qty = if new_qty.lots() >= entry.filled_qty.lots() {
+                    let effective_new_qty = if new_qty.lots() >= entry.filled_qty.lots() {
                         new_qty
                     } else {
                         entry.filled_qty
                     };
+                    entry.total_qty = effective_new_qty;
                     return Some(OrderRequest::Replace {
                         client_order_id,
                         new_price,
-                        new_qty,
+                        new_qty: effective_new_qty,
                         ts_ns,
                     });
                 }
@@ -587,5 +588,71 @@ mod tests {
             Some(OrderState::Live)
         );
         assert_eq!(oms.stale_report_count(), 1);
+    }
+
+    #[test]
+    fn replace_qty_is_clamped_to_filled_qty() {
+        let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(9);
+        let request = oms
+            .apply_intent(
+                Intent::PlaceLimit {
+                    symbol,
+                    side: Side::Bid,
+                    price: Price::new(100).unwrap(),
+                    qty: Qty::new(5).unwrap(),
+                    tif: TimeInForce::Gtc,
+                    tag: None,
+                },
+                1,
+            )
+            .unwrap();
+        let OrderRequest::Place(order) = request else {
+            panic!("expected place request");
+        };
+        let id = order.client_order_id;
+
+        oms.on_execution_report(&build_report(
+            id,
+            symbol,
+            Side::Bid,
+            OrderStatus::Accepted,
+            0,
+            2,
+        ));
+        oms.on_execution_report(&build_report(
+            id,
+            symbol,
+            Side::Bid,
+            OrderStatus::PartiallyFilled,
+            4,
+            3,
+        ));
+
+        let replace_req = oms
+            .apply_intent(
+                Intent::Replace {
+                    client_order_id: id,
+                    new_price: Price::new(101).unwrap(),
+                    new_qty: Qty::new(2).unwrap(),
+                },
+                4,
+            )
+            .unwrap();
+        let OrderRequest::Replace { new_qty, .. } = replace_req else {
+            panic!("expected replace request");
+        };
+        assert_eq!(new_qty.lots(), 4);
+
+        oms.on_execution_report(&build_report(
+            id,
+            symbol,
+            Side::Bid,
+            OrderStatus::Filled,
+            4,
+            5,
+        ));
+        assert_eq!(oms.order_state(id), Some(OrderState::Filled));
+        assert_eq!(oms.open_orders(), 0);
     }
 }
