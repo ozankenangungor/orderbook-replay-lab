@@ -1,74 +1,53 @@
 # orderbook-replay-lab-rs
 
-A Rust workspace for low-latency limit order book (LOB) research.
-It focuses on deterministic replay, a minimal L2 book, and latency/throughput metrics.
-Designed to be readable and extendable for learning and prototyping.
-Targets Rust 2021 on the stable toolchain.
-Repository name: orderbook-replay-lab-rs.
+This repo is my Rust playground for order book replay and execution simulation.
+Main goal is deterministic behavior with clean, modular components so I can iterate fast on strategy and engine ideas.
 
-## What it does
-- Defines a strict market event model (L2 deltas) with integer ticks/lots.
-- Encodes/decodes events as stable JSON lines, with optional binary v2 logs.
-- Replays logs into a minimal L2 order book and reports metrics.
-- Generates synthetic logs to avoid external data dependencies.
+## What is inside
+- L2 market event model with integer ticks/lots.
+- JSONL codec, plus optional binary records for faster replay.
+- Deterministic replay reader.
+- Single-symbol L2 order book with best bid/ask tracking.
+- Simple engine pipeline: strategy -> risk -> OMS -> simulated venue.
+- Basic strategies (`noop`, `twap`, `mm`) and CLI flows.
 
-## Architecture
-- `core`: domain types and invariants (Side, SymbolId, Price, Qty, MarketEvent).
-- `codec`: JSON-line format encoder/decoder for deterministic replay.
-- `replay`: streaming reader for event logs (line-by-line).
-- `orderbook`: minimal single-symbol L2 book with best bid/ask.
-- `metrics`: latency histogram and throughput tracking.
-- `cli`: `gen` and `replay` subcommands for end-to-end flow.
+## Quick start
+Generate synthetic data:
 
-## Quickstart
-Generate a synthetic log:
 ```sh
 cargo run -p cli -- gen --output /tmp/lob.log --symbol BTC-USD --events 1000
 ```
 
-Replay and print metrics:
+Replay and print stats:
+
 ```sh
 cargo run -p cli -- replay --input /tmp/lob.log --symbol BTC-USD
 ```
 
-Format defaults to `jsonl`. Use `--format bin` for the binary v2 format
-(requires enabling the `bin` feature when building the CLI).
+Run end-to-end simulation:
 
-Sample output:
-```text
-total_events_read=1000
-events_applied=1000
-events_dropped=0
-throughput_windowed=12345.67 events/sec
-throughput_overall=12000.00 events/sec
-latency=count=1000 p50=NN p95=NN p99=NN max=NN
-best_bid=100123@4 best_ask=100124@2
+```sh
+cargo run -p cli -- simulate --input /tmp/lob.log --symbol BTC-USD --strategy mm
 ```
 
-## Performance methodology (brief)
-- Measure per-event `orderbook.apply(...)` latency in nanoseconds.
-- Track percentile stats (p50/p95/p99/max) via HDR histogram.
-- Compute throughput over a sliding window and overall elapsed time.
-- Binary v2 logs avoid JSON parsing overhead and are expected to replay faster
-  (exact numbers TBD).
+Use `--format bin` for binary replay/generation when building with `bin` feature.
 
-## Roadmap
-- Add L2 snapshot events and trade events.
-- Extend order book with depth queries and crossed-book detection.
-- Add binary log format for higher replay throughput.
-- Expand CLI with replay summaries and export options.
+## Project layout
+- `core`: domain types and invariants.
+- `codec`: JSON/binary encode-decode.
+- `replay`: event readers.
+- `orderbook`: in-memory book.
+- `metrics`: latency and throughput helpers.
+- `strategy-api`: strategy interface and context.
+- `strategies`: sample strategy implementations.
+- `risk`: policy chain.
+- `oms`: order state machine.
+- `venue` / `venue-sim`: venue interface and simulation.
+- `engine`: orchestration.
+- `cli`: commands (`gen`, `replay`, `simulate`).
 
-## Engine-first roadmap
-This repository is research/simulation oriented (no live trading or exchange
-credentials). Design notes:
-- `docs/engine_architecture.md`
-- `docs/strategy_api.md`
-- `docs/oms.md`
-- `docs/risk.md`
-- `docs/venue.md`
+## Notes
+- Built for research and simulation, not for live trading.
+- Determinism and observability are prioritized over exchange-specific complexity.
 
-## Educational disclaimer
-This project is for learning and experimentation. It is not production trading
-software and should not be used for live trading or financial decisions.
-
-License: MIT.
+License: MIT
