@@ -1,0 +1,9 @@
+/Users/ozankenangungor/orderbookgithubproje/target/debug/deps/core-65a73a3e1c84c6e9.d: core/src/lib.rs Cargo.toml
+
+/Users/ozankenangungor/orderbookgithubproje/target/debug/deps/libcore-65a73a3e1c84c6e9.rmeta: core/src/lib.rs Cargo.toml
+
+core/src/lib.rs:
+Cargo.toml:
+
+# env-dep:CLIPPY_ARGS=-D__CLIPPY_HACKERY__warnings__CLIPPY_HACKERY__
+# env-dep:CLIPPY_CONF_DIR
