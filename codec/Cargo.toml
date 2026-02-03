@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-lob_core = { path = "../core" }
+lob_core = { package = "core", path = "../core" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
