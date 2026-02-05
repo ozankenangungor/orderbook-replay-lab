@@ -1,11 +1,16 @@
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
-use lob_core::Symbol;
+use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
 use metrics::{LatencyStats, ThroughputTracker};
 use orderbook::OrderBook;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use replay::ReplayReader;
+
+const GEN_SEED: u64 = 42;
 
 #[derive(Parser)]
 #[command(name = "rust-latency-lob", version, about = "Low-latency LOB tools")]
@@ -24,6 +29,14 @@ enum Commands {
         #[arg(long)]
         limit: Option<u64>,
     },
+    Gen {
+        #[arg(long)]
+        output: std::path::PathBuf,
+        #[arg(long)]
+        symbol: String,
+        #[arg(long)]
+        events: u64,
+    },
 }
 
 fn main() {
@@ -41,6 +54,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             symbol,
             limit,
         } => run_replay(&input, &symbol, limit),
+        Commands::Gen {
+            output,
+            symbol,
+            events,
+        } => run_gen(&output, &symbol, events),
     }
 }
 
@@ -96,5 +114,47 @@ fn run_replay(
     println!("latency={}", latency.summary_string());
     println!("best_bid={} best_ask={}", best_bid, best_ask);
 
+    Ok(())
+}
+
+fn run_gen(output: &Path, symbol: &str, events: u64) -> Result<(), Box<dyn std::error::Error>> {
+    let symbol = Symbol::new(symbol)?;
+    let file = std::fs::File::create(output)?;
+    let mut writer = BufWriter::new(file);
+    let mut rng = StdRng::seed_from_u64(GEN_SEED);
+    let mut mid: i64 = 100_000;
+
+    for idx in 0..events {
+        let drift: i64 = rng.gen_range(-1..=1);
+        mid = (mid + drift).max(1);
+        let side = if rng.gen_bool(0.5) {
+            Side::Bid
+        } else {
+            Side::Ask
+        };
+        let offset: i64 = rng.gen_range(1..=5);
+        let price_ticks = match side {
+            Side::Bid => (mid - offset).max(1),
+            Side::Ask => mid + offset,
+        };
+        let remove = rng.gen_bool(0.1);
+        let qty_lots: i64 = if remove { 0 } else { rng.gen_range(1..=10) };
+
+        let update = LevelUpdate {
+            side,
+            price: Price::new(price_ticks)?,
+            qty: Qty::new(qty_lots)?,
+        };
+        let event = MarketEvent::L2Delta {
+            ts_ns: idx,
+            symbol: symbol.clone(),
+            updates: vec![update],
+        };
+        let line = codec::encode_event_json_line(&event);
+        writeln!(writer, "{}", line)?;
+    }
+
+    writer.flush()?;
+    println!("generated={} output={}", events, output.display());
     Ok(())
 }

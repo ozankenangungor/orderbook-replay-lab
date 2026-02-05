@@ -9,11 +9,12 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+rand = { workspace = true }
+codec = { path = "../codec" }
 lob_core = { package = "core", path = "../core" }
 metrics = { path = "../metrics" }
 orderbook = { path = "../orderbook" }
 replay = { path = "../replay" }
 
 [dev-dependencies]
-codec = { path = "../codec" }
 tempfile = { workspace = true }
