@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 lob_core = { package = "core", path = "../core" }
+
+[dev-dependencies]
+proptest = "1.4"
