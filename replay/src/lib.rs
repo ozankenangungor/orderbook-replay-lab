@@ -23,8 +23,8 @@ impl ReplayReader {
     pub fn open(path: &Path) -> Result<Self, ReplayError> {
         let file = File::open(path)?;
         Ok(Self {
-            reader: BufReader::new(file),
-            buffer: String::new(),
+            reader: BufReader::with_capacity(64 * 1024, file),
+            buffer: String::with_capacity(4096),
         })
     }
 
