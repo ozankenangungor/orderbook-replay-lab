@@ -78,19 +78,26 @@ fn run_replay(
     let mut throughput = ThroughputTracker::new(Duration::from_secs(1));
 
     let start = Instant::now();
-    let mut count = 0u64;
+    let mut total_events_read = 0u64;
+    let mut events_applied = 0u64;
+    let mut events_dropped = 0u64;
 
     while let Some(event) = reader.next_event()? {
+        total_events_read += 1;
         let t0 = Instant::now();
-        book.apply(&event);
-        let ns = t0.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        let ns = ns.max(1);
-        latency.record(ns);
-        throughput.record(1);
-        count += 1;
+        let applied = book.apply(&event);
+        if applied {
+            let ns = t0.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let ns = ns.max(1);
+            latency.record(ns);
+            throughput.record(1);
+            events_applied += 1;
+        } else {
+            events_dropped += 1;
+        }
 
         if let Some(limit) = limit {
-            if count >= limit {
+            if total_events_read >= limit {
                 break;
             }
         }
@@ -98,7 +105,7 @@ fn run_replay(
 
     let elapsed = start.elapsed();
     let avg_throughput = if elapsed.as_secs_f64() > 0.0 {
-        count as f64 / elapsed.as_secs_f64()
+        events_applied as f64 / elapsed.as_secs_f64()
     } else {
         0.0
     };
@@ -113,7 +120,9 @@ fn run_replay(
         .map(|(price, qty)| format!("{}@{}", price.ticks(), qty.lots()))
         .unwrap_or_else(|| "None".to_string());
 
-    println!("count={}", count);
+    println!("total_events_read={}", total_events_read);
+    println!("events_applied={}", events_applied);
+    println!("events_dropped={}", events_dropped);
     println!("throughput={:.2} events/sec", throughput);
     println!("latency={}", latency.summary_string());
     println!("best_bid={} best_ask={}", best_bid, best_ask);

@@ -19,6 +19,7 @@ fn replay_command_processes_events() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("events.log");
     let symbol = Symbol::new("BTC-USD").expect("symbol");
+    let other_symbol = Symbol::new("ETH-USD").expect("symbol");
 
     let events = vec![
         event(
@@ -66,6 +67,15 @@ fn replay_command_processes_events() {
                 qty: Qty::new(0).unwrap(),
             }],
         ),
+        event(
+            &other_symbol,
+            6,
+            vec![LevelUpdate {
+                side: Side::Bid,
+                price: Price::new(999).unwrap(),
+                qty: Qty::new(1).unwrap(),
+            }],
+        ),
     ];
 
     let mut file = File::create(&path).expect("create log");
@@ -87,7 +97,9 @@ fn replay_command_processes_events() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).expect("stdout");
-    assert!(stdout.contains("count=5"));
+    assert!(stdout.contains("total_events_read=6"));
+    assert!(stdout.contains("events_applied=5"));
+    assert!(stdout.contains("events_dropped=1"));
     assert!(stdout.contains("throughput="));
     assert!(stdout.contains("latency="));
     assert!(stdout.contains("best_bid=102@1"));
