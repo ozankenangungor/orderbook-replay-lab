@@ -203,7 +203,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "codec",
- "core",
+ "lob-core",
  "metrics",
  "orderbook",
  "rand 0.8.5",
@@ -215,7 +215,7 @@ dependencies = [
 name = "codec"
 version = "0.1.0"
 dependencies = [
- "core",
+ "lob-core",
  "serde_json",
  "thiserror",
 ]
@@ -225,14 +225,6 @@ name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
-
-[[package]]
-name = "core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror",
-]
 
 [[package]]
 name = "crc32fast"
@@ -472,6 +464,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
+name = "lob-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -541,8 +541,8 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 name = "orderbook"
 version = "0.1.0"
 dependencies = [
- "core",
  "criterion",
+ "lob-core",
  "proptest",
  "rand 0.8.5",
 ]
@@ -755,7 +755,7 @@ name = "replay"
 version = "0.1.0"
 dependencies = [
  "codec",
- "core",
+ "lob-core",
  "tempfile",
  "thiserror",
 ]

@@ -1,10 +1,10 @@
-# rust-latency-lob
+# orderbook-replay-lab-rs
 
 A Rust workspace for low-latency limit order book (LOB) research.
 It focuses on deterministic replay, a minimal L2 book, and latency/throughput metrics.
 Designed to be readable and extendable for learning and prototyping.
 Targets Rust 2021 on the stable toolchain.
-Repository name: orderbook-replay-lab.
+Repository name: orderbook-replay-lab-rs.
 
 ## What it does
 - Defines a strict market event model (L2 deltas) with integer ticks/lots.
@@ -53,3 +53,5 @@ best_bid=100123@4 best_ask=100124@2
 ## Educational disclaimer
 This project is for learning and experimentation. It is not production trading
 software and should not be used for live trading or financial decisions.
+
+License: MIT.

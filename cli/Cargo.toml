@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "rust-latency-lob"
+name = "orderbook-replay-lab-rs"
 path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
 rand = { workspace = true }
 codec = { path = "../codec" }
-lob_core = { package = "core", path = "../core" }
+lob_core = { package = "lob-core", path = "../core" }
 metrics = { path = "../metrics" }
 orderbook = { path = "../orderbook" }
 replay = { path = "../replay" }

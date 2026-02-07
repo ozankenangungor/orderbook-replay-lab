@@ -71,7 +71,7 @@ fn generate_events(symbol: &Symbol, levels: usize, updates: usize, seed: u64) ->
                 let price = prices[rng.gen_range(0..prices.len())];
                 (price, rng.gen_range(1..=10))
             }
-        } else if action < 75 {
+        } else if action < 75 || prices.is_empty() {
             let price = *next_price;
             if is_bid {
                 *next_price -= 1;
@@ -81,20 +81,9 @@ fn generate_events(symbol: &Symbol, levels: usize, updates: usize, seed: u64) ->
             prices.push(price);
             (price, rng.gen_range(1..=10))
         } else {
-            if prices.is_empty() {
-                let price = *next_price;
-                if is_bid {
-                    *next_price -= 1;
-                } else {
-                    *next_price += 1;
-                }
-                prices.push(price);
-                (price, rng.gen_range(1..=10))
-            } else {
-                let idx = rng.gen_range(0..prices.len());
-                let price = prices.swap_remove(idx);
-                (price, 0)
-            }
+            let idx = rng.gen_range(0..prices.len());
+            let price = prices.swap_remove(idx);
+            (price, 0)
         };
 
         let update = LevelUpdate {

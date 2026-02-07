@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 codec = { path = "../codec" }
-lob_core = { package = "core", path = "../core" }
+lob_core = { package = "lob-core", path = "../core" }
 thiserror = { workspace = true }
 
 [dev-dependencies]

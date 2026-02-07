@@ -1,4 +1,6 @@
 target/
-.DS_Storedata.jsonl
-data.jsonl
-data.jsonl
+.DS_Store
+**/.DS_Store
+*.log
+/data/
+**/__MACOSX/

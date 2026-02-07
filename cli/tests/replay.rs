@@ -73,7 +73,7 @@ fn replay_command_processes_events() {
         writeln!(file, "{}", encode_event_json_line(&event)).expect("write log");
     }
 
-    let exe = env!("CARGO_BIN_EXE_rust-latency-lob");
+    let exe = env!("CARGO_BIN_EXE_orderbook-replay-lab-rs");
     let output = Command::new(exe)
         .args([
             "replay",
