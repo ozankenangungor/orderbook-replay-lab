@@ -42,6 +42,8 @@ enum Commands {
         events: u64,
         #[arg(long, default_value_t = GEN_SEED_DEFAULT)]
         seed: u64,
+        #[arg(long)]
+        snapshot_first: bool,
     },
 }
 
@@ -65,7 +67,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             symbol,
             events,
             seed,
-        } => run_gen(&output, &symbol, events, seed),
+            snapshot_first,
+        } => run_gen(&output, &symbol, events, seed, snapshot_first),
     }
 }
 
@@ -107,12 +110,13 @@ fn run_replay(
     }
 
     let elapsed = start.elapsed();
-    let avg_throughput = if elapsed.as_secs_f64() > 0.0 {
+    // Windowed throughput uses the recent tracker window; overall is total applied / elapsed.
+    let throughput_windowed = throughput.events_per_sec().unwrap_or(0.0);
+    let throughput_overall = if elapsed.as_secs_f64() > 0.0 {
         events_applied as f64 / elapsed.as_secs_f64()
     } else {
         0.0
     };
-    let throughput = throughput.events_per_sec().unwrap_or(avg_throughput);
 
     let best_bid = book
         .best_bid()
@@ -126,7 +130,8 @@ fn run_replay(
     println!("total_events_read={}", total_events_read);
     println!("events_applied={}", events_applied);
     println!("events_dropped={}", events_dropped);
-    println!("throughput={:.2} events/sec", throughput);
+    println!("throughput_windowed={:.2} events/sec", throughput_windowed);
+    println!("throughput_overall={:.2} events/sec", throughput_overall);
     println!("latency={}", latency.summary_string());
     println!("best_bid={} best_ask={}", best_bid, best_ask);
 
@@ -138,12 +143,37 @@ fn run_gen(
     symbol: &str,
     events: u64,
     seed: u64,
+    snapshot_first: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let symbol = Symbol::new(symbol)?;
     let file = std::fs::File::create(output)?;
     let mut writer = BufWriter::new(file);
     let mut rng = StdRng::seed_from_u64(seed);
     let mut mid: i64 = 100_000;
+    let mut ts_ns = 0u64;
+
+    if snapshot_first {
+        let mut bids = Vec::with_capacity(5);
+        let mut asks = Vec::with_capacity(5);
+        for level in 1..=5i64 {
+            let bid_price = (mid - level).max(1);
+            let ask_price = mid + level;
+            let bid_qty = rng.gen_range(1..=10);
+            let ask_qty = rng.gen_range(1..=10);
+            bids.push((Price::new(bid_price)?, Qty::new(bid_qty)?));
+            asks.push((Price::new(ask_price)?, Qty::new(ask_qty)?));
+        }
+
+        let snapshot = MarketEvent::L2Snapshot {
+            ts_ns,
+            symbol: symbol.clone(),
+            bids,
+            asks,
+        };
+        let line = codec::encode_event_json_line(&snapshot);
+        writeln!(writer, "{}", line)?;
+        ts_ns += 1;
+    }
 
     for idx in 0..events {
         let drift: i64 = rng.gen_range(-1..=1);
@@ -167,7 +197,7 @@ fn run_gen(
             qty: Qty::new(qty_lots)?,
         };
         let event = MarketEvent::L2Delta {
-            ts_ns: idx,
+            ts_ns: ts_ns + idx,
             symbol: symbol.clone(),
             updates: vec![update],
         };

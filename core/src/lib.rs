@@ -155,6 +155,12 @@ pub enum MarketEvent {
         symbol: Symbol,
         updates: Vec<LevelUpdate>,
     },
+    L2Snapshot {
+        ts_ns: u64,
+        symbol: Symbol,
+        bids: Vec<(Price, Qty)>,
+        asks: Vec<(Price, Qty)>,
+    },
 }
 
 #[cfg(test)]

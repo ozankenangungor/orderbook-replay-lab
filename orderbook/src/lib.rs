@@ -41,6 +41,30 @@ impl OrderBook {
                 }
                 true
             }
+            MarketEvent::L2Snapshot {
+                symbol, bids, asks, ..
+            } => {
+                if symbol != &self.symbol {
+                    return false;
+                }
+
+                self.bids.clear();
+                self.asks.clear();
+
+                for (price, qty) in bids.iter().copied() {
+                    if !qty.is_zero() {
+                        self.bids.insert(price, qty);
+                    }
+                }
+
+                for (price, qty) in asks.iter().copied() {
+                    if !qty.is_zero() {
+                        self.asks.insert(price, qty);
+                    }
+                }
+
+                true
+            }
         }
     }
 
@@ -164,6 +188,59 @@ mod tests {
             Some((Price::new(104).unwrap(), Qty::new(4).unwrap()))
         );
         assert_eq!(book.spread(), Some(Price::new(3).unwrap()));
+    }
+
+    #[test]
+    fn snapshot_then_deltas_update_best_levels() {
+        let symbol = Symbol::new("SNAP-USD").unwrap();
+        let mut book = OrderBook::new(symbol.clone());
+
+        assert!(book.apply(&MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol: symbol.clone(),
+            bids: vec![
+                (Price::new(100).unwrap(), Qty::new(1).unwrap()),
+                (Price::new(99).unwrap(), Qty::new(2).unwrap()),
+            ],
+            asks: vec![
+                (Price::new(105).unwrap(), Qty::new(1).unwrap()),
+                (Price::new(106).unwrap(), Qty::new(2).unwrap()),
+            ],
+        }));
+
+        assert_eq!(
+            book.best_bid(),
+            Some((Price::new(100).unwrap(), Qty::new(1).unwrap()))
+        );
+        assert_eq!(
+            book.best_ask(),
+            Some((Price::new(105).unwrap(), Qty::new(1).unwrap()))
+        );
+
+        assert!(book.apply(&delta(
+            &symbol,
+            vec![
+                LevelUpdate {
+                    side: Side::Bid,
+                    price: Price::new(100).unwrap(),
+                    qty: Qty::new(0).unwrap(),
+                },
+                LevelUpdate {
+                    side: Side::Ask,
+                    price: Price::new(104).unwrap(),
+                    qty: Qty::new(3).unwrap(),
+                },
+            ],
+        )));
+
+        assert_eq!(
+            book.best_bid(),
+            Some((Price::new(99).unwrap(), Qty::new(2).unwrap()))
+        );
+        assert_eq!(
+            book.best_ask(),
+            Some((Price::new(104).unwrap(), Qty::new(3).unwrap()))
+        );
     }
 
     #[test]
