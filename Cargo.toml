@@ -10,3 +10,4 @@ thiserror = "1.0"
 hdrhistogram = "7.5"
 clap = { version = "4.5", features = ["derive"] }
 rand = "0.8"
+criterion = "0.5"
