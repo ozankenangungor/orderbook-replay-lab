@@ -16,5 +16,8 @@ metrics = { path = "../metrics" }
 orderbook = { path = "../orderbook" }
 replay = { path = "../replay" }
 
+[features]
+bin = ["codec/bin", "replay/bin"]
+
 [dev-dependencies]
 tempfile = { workspace = true }

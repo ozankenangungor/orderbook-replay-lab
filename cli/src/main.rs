@@ -2,7 +2,7 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
 use metrics::{LatencyStats, ThroughputTracker};
 use orderbook::OrderBook;
@@ -23,6 +23,12 @@ struct Cli {
     command: Commands,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum LogFormat {
+    Jsonl,
+    Bin,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     Replay {
@@ -32,6 +38,8 @@ enum Commands {
         symbol: String,
         #[arg(long)]
         limit: Option<u64>,
+        #[arg(long, value_enum, default_value_t = LogFormat::Jsonl)]
+        format: LogFormat,
     },
     Gen {
         #[arg(long)]
@@ -44,6 +52,8 @@ enum Commands {
         seed: u64,
         #[arg(long)]
         snapshot_first: bool,
+        #[arg(long, value_enum, default_value_t = LogFormat::Jsonl)]
+        format: LogFormat,
     },
 }
 
@@ -61,14 +71,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             input,
             symbol,
             limit,
-        } => run_replay(&input, &symbol, limit),
+            format,
+        } => run_replay(&input, &symbol, limit, format),
         Commands::Gen {
             output,
             symbol,
             events,
             seed,
             snapshot_first,
-        } => run_gen(&output, &symbol, events, seed, snapshot_first),
+            format,
+        } => run_gen(&output, &symbol, events, seed, snapshot_first, format),
     }
 }
 
@@ -76,9 +88,14 @@ fn run_replay(
     input: &Path,
     symbol: &str,
     limit: Option<u64>,
+    format: LogFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let symbol = Symbol::new(symbol)?;
-    let mut reader = ReplayReader::open(input)?;
+    let format = match format {
+        LogFormat::Jsonl => replay::ReplayFormat::Jsonl,
+        LogFormat::Bin => replay::ReplayFormat::Bin,
+    };
+    let mut reader = ReplayReader::open_with_format(input, format)?;
     let mut book = OrderBook::new(symbol.clone());
     let mut latency = LatencyStats::new();
     let mut throughput = ThroughputTracker::new(Duration::from_secs(1));
@@ -144,6 +161,7 @@ fn run_gen(
     events: u64,
     seed: u64,
     snapshot_first: bool,
+    format: LogFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let symbol = Symbol::new(symbol)?;
     let file = std::fs::File::create(output)?;
@@ -170,8 +188,7 @@ fn run_gen(
             bids,
             asks,
         };
-        let line = codec::encode_event_json_line(&snapshot);
-        writeln!(writer, "{}", line)?;
+        write_event(&mut writer, &snapshot, format)?;
         ts_ns += 1;
     }
 
@@ -201,11 +218,28 @@ fn run_gen(
             symbol: symbol.clone(),
             updates: vec![update],
         };
-        let line = codec::encode_event_json_line(&event);
-        writeln!(writer, "{}", line)?;
+        write_event(&mut writer, &event, format)?;
     }
 
     writer.flush()?;
     println!("generated={} output={}", events, output.display());
+    Ok(())
+}
+
+fn write_event(
+    writer: &mut BufWriter<std::fs::File>,
+    event: &MarketEvent,
+    format: LogFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match format {
+        LogFormat::Jsonl => {
+            let line = codec::encode_event_json_line(event);
+            writeln!(writer, "{}", line)?;
+        }
+        LogFormat::Bin => {
+            let record = codec::encode_event_bin_record(event)?;
+            writer.write_all(&record)?;
+        }
+    }
     Ok(())
 }

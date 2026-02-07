@@ -8,7 +8,7 @@ Repository name: orderbook-replay-lab-rs.
 
 ## What it does
 - Defines a strict market event model (L2 deltas) with integer ticks/lots.
-- Encodes/decodes events as stable JSON lines for deterministic replay.
+- Encodes/decodes events as stable JSON lines, with optional binary v2 logs.
 - Replays logs into a minimal L2 order book and reports metrics.
 - Generates synthetic logs to avoid external data dependencies.
 
@@ -31,10 +31,16 @@ Replay and print metrics:
 cargo run -p cli -- replay --input /tmp/lob.log --symbol BTC-USD
 ```
 
+Format defaults to `jsonl`. Use `--format bin` for the binary v2 format
+(requires enabling the `bin` feature when building the CLI).
+
 Sample output:
 ```text
-count=1000
-throughput=12345.67 events/sec
+total_events_read=1000
+events_applied=1000
+events_dropped=0
+throughput_windowed=12345.67 events/sec
+throughput_overall=12000.00 events/sec
 latency=count=1000 p50=NN p95=NN p99=NN max=NN
 best_bid=100123@4 best_ask=100124@2
 ```
@@ -43,6 +49,8 @@ best_bid=100123@4 best_ask=100124@2
 - Measure per-event `orderbook.apply(...)` latency in nanoseconds.
 - Track percentile stats (p50/p95/p99/max) via HDR histogram.
 - Compute throughput over a sliding window and overall elapsed time.
+- Binary v2 logs avoid JSON parsing overhead and are expected to replay faster
+  (exact numbers TBD).
 
 ## Roadmap
 - Add L2 snapshot events and trade events.
