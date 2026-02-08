@@ -1,0 +1,11 @@
+[package]
+name = "trading-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lob_core = { package = "lob-core", path = "../core" }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
