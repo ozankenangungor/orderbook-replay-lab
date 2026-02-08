@@ -8,6 +8,8 @@ members = [
     "metrics",
     "cli",
     "trading-types",
+    "strategy-api",
+    "strategies",
 ]
 
 [workspace.dependencies]
