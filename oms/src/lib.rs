@@ -187,6 +187,8 @@ mod tests {
 
     fn build_report(
         client_order_id: ClientOrderId,
+        symbol: &Symbol,
+        side: Side,
         status: OrderStatus,
         filled_qty: i64,
         ts_ns: u64,
@@ -198,6 +200,8 @@ mod tests {
             last_fill_price: Price::new(100).unwrap(),
             fee_ticks: 0,
             ts_ns,
+            symbol: symbol.clone(),
+            side,
         }
     }
 
@@ -220,10 +224,24 @@ mod tests {
         let id = order.client_order_id;
         assert_eq!(oms.order_state(id), Some(OrderState::PendingNew));
 
-        oms.on_execution_report(&build_report(id, OrderStatus::Accepted, 0, 2));
+        oms.on_execution_report(&build_report(
+            id,
+            &Symbol::new("BTC-USD").unwrap(),
+            Side::Bid,
+            OrderStatus::Accepted,
+            0,
+            2,
+        ));
         assert_eq!(oms.order_state(id), Some(OrderState::Live));
 
-        oms.on_execution_report(&build_report(id, OrderStatus::Filled, 2, 3));
+        oms.on_execution_report(&build_report(
+            id,
+            &Symbol::new("BTC-USD").unwrap(),
+            Side::Bid,
+            OrderStatus::Filled,
+            2,
+            3,
+        ));
         assert_eq!(oms.order_state(id), Some(OrderState::Filled));
         assert_eq!(oms.filled_qty(id).unwrap().lots(), 2);
     }
@@ -244,7 +262,14 @@ mod tests {
             panic!("expected place request");
         };
         let id = order.client_order_id;
-        oms.on_execution_report(&build_report(id, OrderStatus::Accepted, 0, 2));
+        oms.on_execution_report(&build_report(
+            id,
+            &Symbol::new("ETH-USD").unwrap(),
+            Side::Ask,
+            OrderStatus::Accepted,
+            0,
+            2,
+        ));
 
         let cancel_intent = Intent::Cancel {
             client_order_id: id,
@@ -253,7 +278,14 @@ mod tests {
         assert!(matches!(cancel_req, OrderRequest::Cancel { .. }));
         assert_eq!(oms.order_state(id), Some(OrderState::PendingCancel));
 
-        oms.on_execution_report(&build_report(id, OrderStatus::Canceled, 0, 4));
+        oms.on_execution_report(&build_report(
+            id,
+            &Symbol::new("ETH-USD").unwrap(),
+            Side::Ask,
+            OrderStatus::Canceled,
+            0,
+            4,
+        ));
         assert_eq!(oms.order_state(id), Some(OrderState::Canceled));
     }
 
@@ -273,9 +305,23 @@ mod tests {
             panic!("expected place request");
         };
         let id = order.client_order_id;
-        oms.on_execution_report(&build_report(id, OrderStatus::Accepted, 0, 2));
+        oms.on_execution_report(&build_report(
+            id,
+            &Symbol::new("SOL-USD").unwrap(),
+            Side::Bid,
+            OrderStatus::Accepted,
+            0,
+            2,
+        ));
 
-        let fill = build_report(id, OrderStatus::Filled, 3, 3);
+        let fill = build_report(
+            id,
+            &Symbol::new("SOL-USD").unwrap(),
+            Side::Bid,
+            OrderStatus::Filled,
+            3,
+            3,
+        );
         oms.on_execution_report(&fill);
         oms.on_execution_report(&fill);
 
