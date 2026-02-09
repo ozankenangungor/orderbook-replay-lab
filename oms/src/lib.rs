@@ -148,6 +148,13 @@ impl Oms {
         self.orphan_reports
     }
 
+    pub fn open_orders(&self) -> usize {
+        self.orders
+            .values()
+            .filter(|entry| !entry.state.is_terminal())
+            .count()
+    }
+
     #[cfg(test)]
     fn order_state(&self, client_order_id: ClientOrderId) -> Option<OrderState> {
         self.orders.get(&client_order_id).map(|entry| entry.state)

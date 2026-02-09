@@ -1,0 +1,8 @@
+[package]
+name = "venue"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+oms = { path = "../oms" }
+trading-types = { path = "../trading-types" }
