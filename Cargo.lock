@@ -212,12 +212,21 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "codec",
+ "engine",
  "lob-core",
  "metrics",
+ "oms",
  "orderbook",
+ "portfolio",
  "rand 0.8.5",
  "replay",
+ "risk",
+ "strategies",
+ "strategy-api",
  "tempfile",
+ "trading-types",
+ "venue",
+ "venue-sim",
 ]
 
 [[package]]
@@ -1022,6 +1031,17 @@ version = "0.1.0"
 dependencies = [
  "oms",
  "trading-types",
+]
+
+[[package]]
+name = "venue-sim"
+version = "0.1.0"
+dependencies = [
+ "lob-core",
+ "oms",
+ "orderbook",
+ "trading-types",
+ "venue",
 ]
 
 [[package]]

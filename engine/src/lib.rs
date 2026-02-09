@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use lob_core::{MarketEvent, Symbol};
@@ -11,7 +13,7 @@ use trading_types::Intent;
 use venue::ExecutionVenue;
 
 pub struct Engine {
-    book: OrderBook,
+    book: Rc<RefCell<OrderBook>>,
     portfolio: Portfolio,
     oms: Oms,
     risk: RiskEngine,
@@ -29,6 +31,24 @@ impl Engine {
         strategy: Box<dyn Strategy>,
         venue: Box<dyn ExecutionVenue>,
     ) -> Self {
+        Self::with_shared_book(
+            Rc::new(RefCell::new(book)),
+            portfolio,
+            oms,
+            risk,
+            strategy,
+            venue,
+        )
+    }
+
+    pub fn with_shared_book(
+        book: Rc<RefCell<OrderBook>>,
+        portfolio: Portfolio,
+        oms: Oms,
+        risk: RiskEngine,
+        strategy: Box<dyn Strategy>,
+        venue: Box<dyn ExecutionVenue>,
+    ) -> Self {
         Self {
             book,
             portfolio,
@@ -40,13 +60,13 @@ impl Engine {
         }
     }
 
-    pub fn on_market_event(&mut self, event: &MarketEvent) {
+    pub fn on_market_event(&mut self, event: &MarketEvent) -> bool {
         // Measures book apply + strategy decision + routing/venue response handling.
         let start = Instant::now();
 
-        let applied = self.book.apply(event);
+        let applied = self.book.borrow_mut().apply(event);
         if !applied {
-            return;
+            return false;
         }
 
         let (ts_ns, symbol) = match event {
@@ -60,6 +80,7 @@ impl Engine {
 
         let ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         self.latency.record(ns.max(1));
+        true
     }
 
     fn handle_intents(&mut self, ts_ns: u64, ctx: &ContextSnapshot, intents: Vec<Intent>) {
@@ -84,8 +105,10 @@ impl Engine {
     }
 
     fn build_context(&self, ts_ns: u64, symbol: &Symbol) -> ContextSnapshot {
-        let best_bid = self.book.best_bid();
-        let best_ask = self.book.best_ask();
+        let (best_bid, best_ask) = {
+            let book = self.book.borrow();
+            (book.best_bid(), book.best_ask())
+        };
         let position_lots = self.portfolio.position_lots(symbol);
         let open_orders = self.oms.open_orders();
         ContextSnapshot::new(
@@ -104,6 +127,14 @@ impl Engine {
 
     pub fn position_lots(&self, symbol: &Symbol) -> i64 {
         self.portfolio.position_lots(symbol)
+    }
+
+    pub fn realized_pnl_ticks(&self, symbol: &Symbol) -> i128 {
+        self.portfolio.realized_pnl_ticks(symbol)
+    }
+
+    pub fn fees_paid_ticks(&self, symbol: &Symbol) -> i128 {
+        self.portfolio.fees_paid_ticks(symbol)
     }
 }
 
@@ -199,7 +230,7 @@ mod tests {
             bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
             asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
         };
-        engine.on_market_event(&snapshot);
+        assert!(engine.on_market_event(&snapshot));
 
         let delta = MarketEvent::L2Delta {
             ts_ns: 2,
@@ -210,7 +241,7 @@ mod tests {
                 qty: Qty::new(2).unwrap(),
             }],
         };
-        engine.on_market_event(&delta);
+        assert!(engine.on_market_event(&delta));
 
         assert_eq!(engine.position_lots(&symbol), 1);
     }
