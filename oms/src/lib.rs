@@ -134,8 +134,14 @@ impl Oms {
         let current_qty = entry.filled_qty.lots();
 
         if report_qty < current_qty {
+            // `filled_qty` is treated as cumulative per order. A lower value indicates a
+            // stale/out-of-order report, so keep the last known max and ignore regression.
             return;
         }
+        debug_assert!(
+            report_qty >= current_qty,
+            "execution report cumulative filled_qty regressed"
+        );
         if report_qty == current_qty && entry.state == new_state {
             return;
         }
