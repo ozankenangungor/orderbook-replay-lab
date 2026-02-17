@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use lob_core::{Price, Qty, Side, Symbol};
-use trading_types::{ExecutionReport, OrderStatus};
+use trading_types::{ClientOrderId, ExecutionReport, OrderStatus};
 
 #[derive(Debug, Default, Clone)]
 struct Position {
@@ -14,26 +14,48 @@ struct Position {
 #[derive(Debug, Default)]
 pub struct Portfolio {
     positions: HashMap<Symbol, Position>,
+    filled_by_order: HashMap<ClientOrderId, i64>,
 }
 
 impl Portfolio {
     pub fn new() -> Self {
         Self {
             positions: HashMap::new(),
+            filled_by_order: HashMap::new(),
         }
     }
 
     pub fn on_execution_report(&mut self, report: &ExecutionReport) {
+        if matches!(
+            report.status,
+            OrderStatus::Canceled | OrderStatus::Rejected | OrderStatus::Expired
+        ) {
+            self.filled_by_order.remove(&report.client_order_id);
+            return;
+        }
+
         if report.status != OrderStatus::Filled && report.status != OrderStatus::PartiallyFilled {
             return;
         }
 
-        let pos = self.positions.entry(report.symbol.clone()).or_default();
-        let delta_qty = report.filled_qty.lots();
-        if delta_qty == 0 {
+        let reported = report.filled_qty.lots();
+        let prev = self
+            .filled_by_order
+            .get(&report.client_order_id)
+            .copied()
+            .unwrap_or(0);
+        if reported <= prev {
+            if report.status == OrderStatus::Filled {
+                self.filled_by_order.remove(&report.client_order_id);
+            }
             return;
         }
 
+        let delta_qty = reported - prev;
+        self.filled_by_order
+            .insert(report.client_order_id, reported);
+
+        let pos = self.positions.entry(report.symbol.clone()).or_default();
         let fill_price = report.last_fill_price.ticks();
         let signed_qty = if report.side == Side::Bid {
             delta_qty
@@ -72,6 +94,10 @@ impl Portfolio {
 
         pos.position_lots = new_position;
         pos.fees_paid_ticks += report.fee_ticks as i128;
+
+        if report.status == OrderStatus::Filled {
+            self.filled_by_order.remove(&report.client_order_id);
+        }
     }
 
     pub fn mark_to_mid(
@@ -119,6 +145,7 @@ mod tests {
     use trading_types::{ClientOrderId, OrderStatus};
 
     fn report(
+        client_order_id: ClientOrderId,
         symbol: &Symbol,
         qty: i64,
         price: i64,
@@ -127,7 +154,7 @@ mod tests {
         side: lob_core::Side,
     ) -> ExecutionReport {
         ExecutionReport {
-            client_order_id: ClientOrderId(1),
+            client_order_id,
             status,
             filled_qty: Qty::new(qty).unwrap(),
             last_fill_price: Price::new(price).unwrap(),
@@ -144,6 +171,7 @@ mod tests {
         let mut portfolio = Portfolio::new();
 
         portfolio.on_execution_report(&report(
+            ClientOrderId(1),
             &symbol,
             2,
             100,
@@ -152,6 +180,7 @@ mod tests {
             lob_core::Side::Bid,
         ));
         portfolio.on_execution_report(&report(
+            ClientOrderId(2),
             &symbol,
             2,
             110,
@@ -170,6 +199,7 @@ mod tests {
         let mut portfolio = Portfolio::new();
 
         portfolio.on_execution_report(&report(
+            ClientOrderId(1),
             &symbol,
             1,
             100,
@@ -178,6 +208,7 @@ mod tests {
             lob_core::Side::Bid,
         ));
         portfolio.on_execution_report(&report(
+            ClientOrderId(2),
             &symbol,
             1,
             105,
@@ -196,6 +227,7 @@ mod tests {
         let mut portfolio = Portfolio::new();
 
         portfolio.on_execution_report(&report(
+            ClientOrderId(1),
             &symbol,
             2,
             100,
@@ -212,5 +244,43 @@ mod tests {
             )
             .unwrap();
         assert_eq!(unrealized, 10);
+    }
+
+    #[test]
+    fn cumulative_partial_fills_use_delta_per_report() {
+        let symbol = Symbol::new("AVAX-USD").unwrap();
+        let mut portfolio = Portfolio::new();
+        let id = ClientOrderId(7);
+
+        portfolio.on_execution_report(&report(
+            id,
+            &symbol,
+            1,
+            100,
+            1,
+            OrderStatus::PartiallyFilled,
+            lob_core::Side::Bid,
+        ));
+        portfolio.on_execution_report(&report(
+            id,
+            &symbol,
+            3,
+            101,
+            1,
+            OrderStatus::PartiallyFilled,
+            lob_core::Side::Bid,
+        ));
+        portfolio.on_execution_report(&report(
+            id,
+            &symbol,
+            5,
+            102,
+            1,
+            OrderStatus::Filled,
+            lob_core::Side::Bid,
+        ));
+
+        assert_eq!(portfolio.position_lots(&symbol), 5);
+        assert_eq!(portfolio.fees_paid_ticks(&symbol), 3);
     }
 }
