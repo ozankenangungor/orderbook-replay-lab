@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -11,6 +12,8 @@ use risk::{RiskAction, RiskEngine};
 use strategy_api::{ContextSnapshot, Strategy};
 use trading_types::Intent;
 use venue::ExecutionVenue;
+
+const MAX_INTENT_STEPS: usize = 1024;
 
 pub struct Engine {
     book: Rc<RefCell<OrderBook>>,
@@ -84,8 +87,21 @@ impl Engine {
     }
 
     fn handle_intents(&mut self, ts_ns: u64, ctx: &ContextSnapshot, intents: Vec<Intent>) {
-        for intent in intents {
-            let decision = self.risk.evaluate(ctx, &intent);
+        let mut queue = VecDeque::from(intents);
+        let mut processed_steps = 0usize;
+
+        while let Some(intent) = queue.pop_front() {
+            if processed_steps >= MAX_INTENT_STEPS {
+                debug_assert!(
+                    false,
+                    "intent processing exceeded MAX_INTENT_STEPS; stopping to prevent churn"
+                );
+                break;
+            }
+            processed_steps += 1;
+
+            let intent_ctx = self.build_context(ts_ns, &ctx.symbol);
+            let decision = self.risk.evaluate(&intent_ctx, &intent);
             let intent = match decision {
                 RiskAction::Allow(intent) | RiskAction::Transform(intent) => intent,
                 RiskAction::Reject { .. } => continue,
@@ -99,7 +115,8 @@ impl Engine {
                 self.oms.on_execution_report(&report);
                 self.portfolio.on_execution_report(&report);
                 let report_ctx = self.build_context(report.ts_ns, &report.symbol);
-                let _ = self.strategy.on_execution_report(&report_ctx, &report);
+                let follow_up = self.strategy.on_execution_report(&report_ctx, &report);
+                queue.extend(follow_up);
             }
         }
     }
@@ -212,6 +229,62 @@ mod tests {
         }
     }
 
+    struct ReactiveFollowUpStrategy {
+        placed_initial: bool,
+        placed_after_fill: bool,
+    }
+
+    impl ReactiveFollowUpStrategy {
+        fn new() -> Self {
+            Self {
+                placed_initial: false,
+                placed_after_fill: false,
+            }
+        }
+    }
+
+    impl Strategy for ReactiveFollowUpStrategy {
+        fn on_market_event(&mut self, ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+            if self.placed_initial {
+                return Vec::new();
+            }
+            let Some((ask, _)) = ctx.best_ask else {
+                return Vec::new();
+            };
+            self.placed_initial = true;
+            vec![Intent::PlaceLimit {
+                symbol: ctx.symbol.clone(),
+                side: Side::Bid,
+                price: ask,
+                qty: Qty::new(1).unwrap(),
+                tif: TimeInForce::Gtc,
+                tag: None,
+            }]
+        }
+
+        fn on_execution_report(
+            &mut self,
+            ctx: &ContextSnapshot,
+            report: &ExecutionReport,
+        ) -> Vec<Intent> {
+            if self.placed_after_fill || report.status != OrderStatus::Filled {
+                return Vec::new();
+            }
+            let Some((ask, _)) = ctx.best_ask else {
+                return Vec::new();
+            };
+            self.placed_after_fill = true;
+            vec![Intent::PlaceLimit {
+                symbol: ctx.symbol.clone(),
+                side: Side::Bid,
+                price: ask,
+                qty: Qty::new(1).unwrap(),
+                tif: TimeInForce::Gtc,
+                tag: None,
+            }]
+        }
+    }
+
     #[test]
     fn snapshot_then_delta_triggers_fill_and_position() {
         let symbol = Symbol::new("BTC-USD").unwrap();
@@ -244,5 +317,27 @@ mod tests {
         assert!(engine.on_market_event(&delta));
 
         assert_eq!(engine.position_lots(&symbol), 1);
+    }
+
+    #[test]
+    fn execution_report_follow_up_intents_are_processed() {
+        let symbol = Symbol::new("BTC-USD").unwrap();
+        let mut engine = Engine::new(
+            OrderBook::new(symbol.clone()),
+            Portfolio::new(),
+            Oms::new(),
+            RiskEngine::new(),
+            Box::new(ReactiveFollowUpStrategy::new()),
+            Box::new(DummyVenue),
+        );
+
+        let snapshot = MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol: symbol.clone(),
+            bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
+            asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
+        };
+        assert!(engine.on_market_event(&snapshot));
+        assert_eq!(engine.position_lots(&symbol), 2);
     }
 }
