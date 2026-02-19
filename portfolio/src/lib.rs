@@ -283,4 +283,42 @@ mod tests {
         assert_eq!(portfolio.position_lots(&symbol), 5);
         assert_eq!(portfolio.fees_paid_ticks(&symbol), 3);
     }
+
+    #[test]
+    fn fees_sum_across_cumulative_partial_fills() {
+        let symbol = Symbol::new("MATIC-USD").unwrap();
+        let mut portfolio = Portfolio::new();
+        let id = ClientOrderId(42);
+
+        portfolio.on_execution_report(&report(
+            id,
+            &symbol,
+            1,
+            100,
+            2,
+            OrderStatus::PartiallyFilled,
+            lob_core::Side::Bid,
+        ));
+        portfolio.on_execution_report(&report(
+            id,
+            &symbol,
+            2,
+            101,
+            2,
+            OrderStatus::PartiallyFilled,
+            lob_core::Side::Bid,
+        ));
+        portfolio.on_execution_report(&report(
+            id,
+            &symbol,
+            3,
+            102,
+            2,
+            OrderStatus::Filled,
+            lob_core::Side::Bid,
+        ));
+
+        assert_eq!(portfolio.position_lots(&symbol), 3);
+        assert_eq!(portfolio.fees_paid_ticks(&symbol), 6);
+    }
 }
