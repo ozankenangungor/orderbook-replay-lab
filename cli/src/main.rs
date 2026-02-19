@@ -21,6 +21,8 @@ use venue::ExecutionVenue;
 use venue_sim::SimVenue;
 
 const GEN_SEED_DEFAULT: u64 = 42;
+const SIM_TIMER_INTERVAL_NS_DEFAULT: u64 = 1_000_000_000;
+const MAX_TIMER_TICKS_PER_EVENT: usize = 1024;
 
 #[derive(Parser)]
 #[command(
@@ -103,6 +105,8 @@ enum Commands {
         mm_skew_per_lot: i64,
         #[arg(long)]
         limit: Option<u64>,
+        #[arg(long, default_value_t = SIM_TIMER_INTERVAL_NS_DEFAULT)]
+        timer_interval_ns: u64,
         #[arg(long, value_enum, default_value_t = LogFormat::Jsonl)]
         format: LogFormat,
     },
@@ -143,6 +147,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             mm_qty,
             mm_skew_per_lot,
             limit,
+            timer_interval_ns,
             format,
         } => {
             let config = SimulateStrategyConfig {
@@ -153,7 +158,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 mm_qty,
                 mm_skew_per_lot,
             };
-            run_simulate(&input, &symbol, strategy, &config, limit, format)
+            run_simulate(
+                &input,
+                &symbol,
+                strategy,
+                &config,
+                limit,
+                timer_interval_ns,
+                format,
+            )
         }
     }
 }
@@ -306,6 +319,7 @@ fn run_simulate(
     strategy: StrategyKind,
     config: &SimulateStrategyConfig,
     limit: Option<u64>,
+    timer_interval_ns: u64,
     format: LogFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let symbol = Symbol::new(symbol)?;
@@ -333,8 +347,30 @@ fn run_simulate(
     let start = Instant::now();
     let mut events_read = 0u64;
     let mut events_applied = 0u64;
+    let timer_interval_ns = timer_interval_ns.max(1);
+    let mut last_tick_ts_ns: Option<u64> = None;
 
     while let Some(event) = reader.next_event()? {
+        let event_ts_ns = event_ts_ns(&event);
+        if let Some(mut last_tick) = last_tick_ts_ns {
+            let mut ticks_processed = 0usize;
+            while event_ts_ns.saturating_sub(last_tick) >= timer_interval_ns {
+                if ticks_processed >= MAX_TIMER_TICKS_PER_EVENT {
+                    debug_assert!(
+                        false,
+                        "timer processing exceeded MAX_TIMER_TICKS_PER_EVENT; stopping to prevent churn"
+                    );
+                    break;
+                }
+                last_tick = last_tick.saturating_add(timer_interval_ns);
+                engine.on_timer(last_tick, &symbol);
+                ticks_processed += 1;
+            }
+            last_tick_ts_ns = Some(last_tick);
+        } else {
+            last_tick_ts_ns = Some(event_ts_ns);
+        }
+
         events_read += 1;
         if engine.on_market_event(&event) {
             events_applied += 1;
@@ -450,4 +486,11 @@ fn write_event(
         }
     }
     Ok(())
+}
+
+fn event_ts_ns(event: &MarketEvent) -> u64 {
+    match event {
+        MarketEvent::L2Delta { ts_ns, .. } => *ts_ns,
+        MarketEvent::L2Snapshot { ts_ns, .. } => *ts_ns,
+    }
 }

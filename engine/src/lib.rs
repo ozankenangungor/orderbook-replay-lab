@@ -79,14 +79,20 @@ impl Engine {
 
         let ctx = self.build_context(ts_ns, &symbol);
         let intents = self.strategy.on_market_event(&ctx, event);
-        self.handle_intents(ts_ns, &ctx, intents);
+        self.handle_intents(ts_ns, &symbol, intents);
 
         let ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         self.latency.record(ns.max(1));
         true
     }
 
-    fn handle_intents(&mut self, ts_ns: u64, ctx: &ContextSnapshot, intents: Vec<Intent>) {
+    pub fn on_timer(&mut self, ts_ns: u64, symbol: &Symbol) {
+        let ctx = self.build_context(ts_ns, symbol);
+        let intents = self.strategy.on_timer(&ctx);
+        self.handle_intents(ts_ns, symbol, intents);
+    }
+
+    fn handle_intents(&mut self, ts_ns: u64, symbol: &Symbol, intents: Vec<Intent>) {
         let mut queue = VecDeque::from(intents);
         let mut processed_steps = 0usize;
 
@@ -100,7 +106,7 @@ impl Engine {
             }
             processed_steps += 1;
 
-            let intent_ctx = self.build_context(ts_ns, &ctx.symbol);
+            let intent_ctx = self.build_context(ts_ns, symbol);
             let decision = self.risk.evaluate(&intent_ctx, &intent);
             let intent = match decision {
                 RiskAction::Allow(intent) | RiskAction::Transform(intent) => intent,
@@ -285,6 +291,40 @@ mod tests {
         }
     }
 
+    struct TimerOnlyStrategy {
+        fired: bool,
+    }
+
+    impl TimerOnlyStrategy {
+        fn new() -> Self {
+            Self { fired: false }
+        }
+    }
+
+    impl Strategy for TimerOnlyStrategy {
+        fn on_market_event(&mut self, _ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+            Vec::new()
+        }
+
+        fn on_timer(&mut self, ctx: &ContextSnapshot) -> Vec<Intent> {
+            if self.fired {
+                return Vec::new();
+            }
+            let Some((ask, _)) = ctx.best_ask else {
+                return Vec::new();
+            };
+            self.fired = true;
+            vec![Intent::PlaceLimit {
+                symbol: ctx.symbol.clone(),
+                side: Side::Bid,
+                price: ask,
+                qty: Qty::new(1).unwrap(),
+                tif: TimeInForce::Gtc,
+                tag: None,
+            }]
+        }
+    }
+
     #[test]
     fn snapshot_then_delta_triggers_fill_and_position() {
         let symbol = Symbol::new("BTC-USD").unwrap();
@@ -339,5 +379,30 @@ mod tests {
         };
         assert!(engine.on_market_event(&snapshot));
         assert_eq!(engine.position_lots(&symbol), 2);
+    }
+
+    #[test]
+    fn timer_tick_routes_strategy_intents() {
+        let symbol = Symbol::new("BTC-USD").unwrap();
+        let mut engine = Engine::new(
+            OrderBook::new(symbol.clone()),
+            Portfolio::new(),
+            Oms::new(),
+            RiskEngine::new(),
+            Box::new(TimerOnlyStrategy::new()),
+            Box::new(DummyVenue),
+        );
+
+        let snapshot = MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol: symbol.clone(),
+            bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
+            asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
+        };
+        assert!(engine.on_market_event(&snapshot));
+        assert_eq!(engine.position_lots(&symbol), 0);
+
+        engine.on_timer(2, &symbol);
+        assert_eq!(engine.position_lots(&symbol), 1);
     }
 }
