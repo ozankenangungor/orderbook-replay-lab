@@ -175,9 +175,11 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use lob_core::{LevelUpdate, Price, Qty, Side};
-    use trading_types::{ExecutionReport, OrderStatus, TimeInForce};
+    use trading_types::{ClientOrderId, ExecutionReport, OrderStatus, TimeInForce};
 
     struct DummyStrategy {
         placed: bool,
@@ -244,6 +246,152 @@ mod tests {
                 }
                 _ => Vec::new(),
             }
+        }
+    }
+
+    #[derive(Clone)]
+    struct PassiveLiveOrder {
+        symbol: Symbol,
+        side: Side,
+        price: Price,
+        qty: Qty,
+    }
+
+    struct PassiveFillVenue {
+        book: Rc<RefCell<OrderBook>>,
+        next_ts_ns: u64,
+        live_orders: HashMap<ClientOrderId, PassiveLiveOrder>,
+    }
+
+    impl PassiveFillVenue {
+        fn new(book: Rc<RefCell<OrderBook>>) -> Self {
+            Self {
+                book,
+                next_ts_ns: 1,
+                live_orders: HashMap::new(),
+            }
+        }
+
+        fn next_ts(&mut self) -> u64 {
+            let ts = self.next_ts_ns;
+            self.next_ts_ns = self.next_ts_ns.saturating_add(1);
+            ts
+        }
+    }
+
+    impl ExecutionVenue for PassiveFillVenue {
+        fn submit(&mut self, req: &oms::OrderRequest) -> Vec<ExecutionReport> {
+            let oms::OrderRequest::Place(order) = req else {
+                return Vec::new();
+            };
+            let Some(limit_price) = order.price else {
+                return Vec::new();
+            };
+
+            let (best_bid, best_ask) = {
+                let book = self.book.borrow();
+                (book.best_bid(), book.best_ask())
+            };
+            let crossing_price = match order.side {
+                Side::Bid => best_ask.and_then(|(ask, _)| {
+                    if limit_price.ticks() >= ask.ticks() {
+                        Some(ask)
+                    } else {
+                        None
+                    }
+                }),
+                Side::Ask => best_bid.and_then(|(bid, _)| {
+                    if limit_price.ticks() <= bid.ticks() {
+                        Some(bid)
+                    } else {
+                        None
+                    }
+                }),
+            };
+
+            let mut reports = vec![ExecutionReport {
+                client_order_id: order.client_order_id,
+                status: OrderStatus::Accepted,
+                filled_qty: Qty::new(0).unwrap(),
+                last_fill_price: limit_price,
+                fee_ticks: 0,
+                ts_ns: self.next_ts(),
+                symbol: order.symbol.clone(),
+                side: order.side,
+            }];
+
+            if let Some(fill_price) = crossing_price {
+                reports.push(ExecutionReport {
+                    client_order_id: order.client_order_id,
+                    status: OrderStatus::Filled,
+                    filled_qty: order.qty,
+                    last_fill_price: fill_price,
+                    fee_ticks: 0,
+                    ts_ns: self.next_ts(),
+                    symbol: order.symbol.clone(),
+                    side: order.side,
+                });
+            } else {
+                self.live_orders.insert(
+                    order.client_order_id,
+                    PassiveLiveOrder {
+                        symbol: order.symbol.clone(),
+                        side: order.side,
+                        price: limit_price,
+                        qty: order.qty,
+                    },
+                );
+            }
+            reports
+        }
+
+        fn on_book_update(&mut self) -> Vec<ExecutionReport> {
+            let (best_bid, best_ask) = {
+                let book = self.book.borrow();
+                (book.best_bid(), book.best_ask())
+            };
+
+            let mut order_ids: Vec<ClientOrderId> = self.live_orders.keys().copied().collect();
+            order_ids.sort_by_key(|id| id.0);
+            let mut reports = Vec::new();
+            for client_order_id in order_ids {
+                let Some(order) = self.live_orders.get(&client_order_id).cloned() else {
+                    continue;
+                };
+
+                let fill_price = match order.side {
+                    Side::Bid => best_ask.and_then(|(ask, _)| {
+                        if order.price.ticks() >= ask.ticks() {
+                            Some(ask)
+                        } else {
+                            None
+                        }
+                    }),
+                    Side::Ask => best_bid.and_then(|(bid, _)| {
+                        if order.price.ticks() <= bid.ticks() {
+                            Some(bid)
+                        } else {
+                            None
+                        }
+                    }),
+                };
+                let Some(fill_price) = fill_price else {
+                    continue;
+                };
+
+                self.live_orders.remove(&client_order_id);
+                reports.push(ExecutionReport {
+                    client_order_id,
+                    status: OrderStatus::Filled,
+                    filled_qty: order.qty,
+                    last_fill_price: fill_price,
+                    fee_ticks: 0,
+                    ts_ns: self.next_ts(),
+                    symbol: order.symbol,
+                    side: order.side,
+                });
+            }
+            reports
         }
     }
 
@@ -337,6 +485,36 @@ mod tests {
         }
     }
 
+    struct RestingBidStrategy {
+        placed: bool,
+    }
+
+    impl RestingBidStrategy {
+        fn new() -> Self {
+            Self { placed: false }
+        }
+    }
+
+    impl Strategy for RestingBidStrategy {
+        fn on_market_event(&mut self, ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+            if self.placed {
+                return Vec::new();
+            }
+            let Some((bid, _)) = ctx.best_bid else {
+                return Vec::new();
+            };
+            self.placed = true;
+            vec![Intent::PlaceLimit {
+                symbol: ctx.symbol.clone(),
+                side: Side::Bid,
+                price: bid,
+                qty: Qty::new(1).unwrap(),
+                tif: TimeInForce::Gtc,
+                tag: None,
+            }]
+        }
+    }
+
     #[test]
     fn snapshot_then_delta_triggers_fill_and_position() {
         let symbol = Symbol::new("BTC-USD").unwrap();
@@ -415,6 +593,42 @@ mod tests {
         assert_eq!(engine.position_lots(&symbol), 0);
 
         engine.on_timer(2, &symbol);
+        assert_eq!(engine.position_lots(&symbol), 1);
+    }
+
+    #[test]
+    fn passive_fill_triggers_when_market_moves_through_resting_order() {
+        let symbol = Symbol::new("BTC-USD").unwrap();
+        let shared_book = Rc::new(RefCell::new(OrderBook::new(symbol.clone())));
+        let venue = PassiveFillVenue::new(shared_book.clone());
+        let mut engine = Engine::with_shared_book(
+            shared_book,
+            Portfolio::new(),
+            Oms::new(),
+            RiskEngine::new(),
+            Box::new(RestingBidStrategy::new()),
+            Box::new(venue),
+        );
+
+        let snapshot = MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol: symbol.clone(),
+            bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
+            asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
+        };
+        assert!(engine.on_market_event(&snapshot));
+        assert_eq!(engine.position_lots(&symbol), 0);
+
+        let delta = MarketEvent::L2Delta {
+            ts_ns: 2,
+            symbol: symbol.clone(),
+            updates: vec![LevelUpdate {
+                side: Side::Ask,
+                price: Price::new(100).unwrap(),
+                qty: Qty::new(1).unwrap(),
+            }],
+        };
+        assert!(engine.on_market_event(&delta));
         assert_eq!(engine.position_lots(&symbol), 1);
     }
 }
