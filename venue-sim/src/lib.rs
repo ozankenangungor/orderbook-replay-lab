@@ -8,6 +8,8 @@ use orderbook::OrderBook;
 use trading_types::{ClientOrderId, ExecutionReport, OrderStatus, OrderType};
 use venue::ExecutionVenue;
 
+const MAX_PASSIVE_FILLS_PER_EVENT: usize = 1024;
+
 #[derive(Debug, Clone)]
 struct LiveOrder {
     symbol: Symbol,
@@ -18,7 +20,6 @@ struct LiveOrder {
 
 pub struct SimVenue {
     book: Rc<RefCell<OrderBook>>,
-    #[allow(dead_code)]
     maker_fee_ticks: i64,
     taker_fee_ticks: i64,
     next_ts_ns: u64,
@@ -211,6 +212,30 @@ impl SimVenue {
             side: order.side,
         }
     }
+
+    fn passive_fill_price(
+        side: Side,
+        limit_price: Price,
+        best_bid: Option<(Price, Qty)>,
+        best_ask: Option<(Price, Qty)>,
+    ) -> Option<Price> {
+        match side {
+            Side::Bid => best_ask.and_then(|(ask, _)| {
+                if limit_price.ticks() >= ask.ticks() {
+                    Some(ask)
+                } else {
+                    None
+                }
+            }),
+            Side::Ask => best_bid.and_then(|(bid, _)| {
+                if limit_price.ticks() <= bid.ticks() {
+                    Some(bid)
+                } else {
+                    None
+                }
+            }),
+        }
+    }
 }
 
 impl ExecutionVenue for SimVenue {
@@ -227,5 +252,48 @@ impl ExecutionVenue for SimVenue {
                 ..
             } => self.handle_replace(*client_order_id, *new_price, *new_qty),
         }
+    }
+
+    fn on_book_update(&mut self) -> Vec<ExecutionReport> {
+        let (best_bid, best_ask) = {
+            let book = self.book.borrow();
+            (book.best_bid(), book.best_ask())
+        };
+
+        let mut order_ids: Vec<ClientOrderId> = self.live_orders.keys().copied().collect();
+        order_ids.sort_by_key(|id| id.0);
+
+        let mut reports = Vec::new();
+        for client_order_id in order_ids {
+            if reports.len() >= MAX_PASSIVE_FILLS_PER_EVENT {
+                break;
+            }
+
+            let Some(order) = self.live_orders.get(&client_order_id).cloned() else {
+                continue;
+            };
+            let Some(limit_price) = order.price else {
+                continue;
+            };
+            let Some(fill_price) =
+                Self::passive_fill_price(order.side, limit_price, best_bid, best_ask)
+            else {
+                continue;
+            };
+
+            self.live_orders.remove(&client_order_id);
+            reports.push(ExecutionReport {
+                client_order_id,
+                status: OrderStatus::Filled,
+                filled_qty: order.qty,
+                last_fill_price: fill_price,
+                fee_ticks: self.maker_fee_ticks,
+                ts_ns: self.next_ts(),
+                symbol: order.symbol,
+                side: order.side,
+            });
+        }
+
+        reports
     }
 }
