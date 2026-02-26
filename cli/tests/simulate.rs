@@ -3,26 +3,27 @@ use std::io::Write;
 use std::process::Command;
 
 use codec::encode_event_json_line;
-use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
+use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, SymbolTable};
 use tempfile::tempdir;
 
 #[test]
 fn simulate_noop_outputs_stats() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("events.log");
-    let symbol = Symbol::new("BTC-USD").expect("symbol");
-    let other_symbol = Symbol::new("ETH-USD").expect("symbol");
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.try_intern("BTC-USD").expect("symbol");
+    let other_symbol = symbols.try_intern("ETH-USD").expect("symbol");
 
     let events = vec![
         MarketEvent::L2Snapshot {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
             asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
         },
         MarketEvent::L2Delta {
             ts_ns: 2,
-            symbol: symbol.clone(),
+            symbol,
             updates: vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
@@ -45,7 +46,7 @@ fn simulate_noop_outputs_stats() {
         writeln!(
             file,
             "{}",
-            encode_event_json_line(&event).expect("encode log")
+            encode_event_json_line(&event, &symbols).expect("encode log")
         )
         .expect("write log");
     }

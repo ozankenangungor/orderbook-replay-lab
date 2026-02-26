@@ -3,13 +3,13 @@ use std::io::Write;
 use std::process::Command;
 
 use codec::encode_event_json_line;
-use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
+use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, SymbolId, SymbolTable};
 use tempfile::tempdir;
 
-fn event(symbol: &Symbol, ts_ns: u64, updates: Vec<LevelUpdate>) -> MarketEvent {
+fn event(symbol: SymbolId, ts_ns: u64, updates: Vec<LevelUpdate>) -> MarketEvent {
     MarketEvent::L2Delta {
         ts_ns,
-        symbol: symbol.clone(),
+        symbol,
         updates,
     }
 }
@@ -18,12 +18,13 @@ fn event(symbol: &Symbol, ts_ns: u64, updates: Vec<LevelUpdate>) -> MarketEvent 
 fn replay_command_processes_events() {
     let dir = tempdir().expect("temp dir");
     let path = dir.path().join("events.log");
-    let symbol = Symbol::new("BTC-USD").expect("symbol");
-    let other_symbol = Symbol::new("ETH-USD").expect("symbol");
+    let mut symbols = SymbolTable::new();
+    let symbol = symbols.try_intern("BTC-USD").expect("symbol");
+    let other_symbol = symbols.try_intern("ETH-USD").expect("symbol");
 
     let events = vec![
         event(
-            &symbol,
+            symbol,
             1,
             vec![LevelUpdate {
                 side: Side::Bid,
@@ -32,7 +33,7 @@ fn replay_command_processes_events() {
             }],
         ),
         event(
-            &symbol,
+            symbol,
             2,
             vec![LevelUpdate {
                 side: Side::Ask,
@@ -41,7 +42,7 @@ fn replay_command_processes_events() {
             }],
         ),
         event(
-            &symbol,
+            symbol,
             3,
             vec![LevelUpdate {
                 side: Side::Bid,
@@ -50,7 +51,7 @@ fn replay_command_processes_events() {
             }],
         ),
         event(
-            &symbol,
+            symbol,
             4,
             vec![LevelUpdate {
                 side: Side::Ask,
@@ -59,7 +60,7 @@ fn replay_command_processes_events() {
             }],
         ),
         event(
-            &symbol,
+            symbol,
             5,
             vec![LevelUpdate {
                 side: Side::Bid,
@@ -68,7 +69,7 @@ fn replay_command_processes_events() {
             }],
         ),
         event(
-            &other_symbol,
+            other_symbol,
             6,
             vec![LevelUpdate {
                 side: Side::Bid,
@@ -83,7 +84,7 @@ fn replay_command_processes_events() {
         writeln!(
             file,
             "{}",
-            encode_event_json_line(&event).expect("encode log")
+            encode_event_json_line(&event, &symbols).expect("encode log")
         )
         .expect("write log");
     }

@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Instant;
 
-use lob_core::{MarketEvent, Symbol};
+use lob_core::{MarketEvent, SymbolId};
 use metrics::LatencyStats;
 use oms::Oms;
 use orderbook::OrderBook;
@@ -89,8 +89,8 @@ impl Engine {
         }
 
         let (ts_ns, symbol) = match event {
-            MarketEvent::L2Delta { ts_ns, symbol, .. } => (*ts_ns, symbol),
-            MarketEvent::L2Snapshot { ts_ns, symbol, .. } => (*ts_ns, symbol),
+            MarketEvent::L2Delta { ts_ns, symbol, .. } => (*ts_ns, *symbol),
+            MarketEvent::L2Snapshot { ts_ns, symbol, .. } => (*ts_ns, *symbol),
         };
 
         let mut queue = std::mem::take(&mut self.intent_queue);
@@ -115,7 +115,7 @@ impl Engine {
         true
     }
 
-    pub fn on_timer(&mut self, ts_ns: u64, symbol: &Symbol) {
+    pub fn on_timer(&mut self, ts_ns: u64, symbol: SymbolId) {
         let mut queue = std::mem::take(&mut self.intent_queue);
         let mut intents = std::mem::take(&mut self.intent_buffer);
         let mut reports = std::mem::take(&mut self.report_buffer);
@@ -137,7 +137,7 @@ impl Engine {
     fn handle_intent_queue(
         &mut self,
         ts_ns: u64,
-        symbol: &Symbol,
+        symbol: SymbolId,
         queue: &mut VecDeque<Intent>,
         reports: &mut Vec<ExecutionReport>,
         intents: &mut Vec<Intent>,
@@ -179,7 +179,7 @@ impl Engine {
         for report in reports.drain(..) {
             self.oms.on_execution_report(&report);
             self.portfolio.on_execution_report(&report);
-            let report_ctx = self.build_context(report.ts_ns, &report.symbol);
+            let report_ctx = self.build_context(report.ts_ns, report.symbol);
             intents.clear();
             self.strategy
                 .on_execution_report(&report_ctx, &report, intents);
@@ -187,7 +187,7 @@ impl Engine {
         }
     }
 
-    fn build_context(&self, ts_ns: u64, symbol: &Symbol) -> ContextSnapshot {
+    fn build_context(&self, ts_ns: u64, symbol: SymbolId) -> ContextSnapshot {
         let (best_bid, best_ask) = {
             let book = self.book.borrow();
             (book.best_bid(), book.best_ask())
@@ -196,7 +196,7 @@ impl Engine {
         let open_orders = self.oms.open_orders();
         ContextSnapshot::new(
             ts_ns,
-            symbol.clone(),
+            symbol,
             best_bid,
             best_ask,
             position_lots,
@@ -208,15 +208,15 @@ impl Engine {
         &self.latency
     }
 
-    pub fn position_lots(&self, symbol: &Symbol) -> i64 {
+    pub fn position_lots(&self, symbol: SymbolId) -> i64 {
         self.portfolio.position_lots(symbol)
     }
 
-    pub fn realized_pnl_ticks(&self, symbol: &Symbol) -> i128 {
+    pub fn realized_pnl_ticks(&self, symbol: SymbolId) -> i128 {
         self.portfolio.realized_pnl_ticks(symbol)
     }
 
-    pub fn fees_paid_ticks(&self, symbol: &Symbol) -> i128 {
+    pub fn fees_paid_ticks(&self, symbol: SymbolId) -> i128 {
         self.portfolio.fees_paid_ticks(symbol)
     }
 }
@@ -254,7 +254,7 @@ mod tests {
             };
             self.placed = true;
             out.push(Intent::PlaceLimit {
-                symbol: ctx.symbol.clone(),
+                symbol: ctx.symbol,
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
@@ -272,7 +272,7 @@ mod tests {
                 return;
             };
 
-            let symbol = order.symbol.clone();
+            let symbol = order.symbol;
             let side = order.side;
             let price = order.price.unwrap_or_else(|| Price::new(0).unwrap());
             let qty = order.qty;
@@ -283,7 +283,7 @@ mod tests {
                 last_fill_price: price,
                 fee_ticks: 0,
                 ts_ns: 1,
-                symbol: symbol.clone(),
+                symbol,
                 side,
             });
             out.push(ExecutionReport {
@@ -301,7 +301,7 @@ mod tests {
 
     #[derive(Clone)]
     struct PassiveLiveOrder {
-        symbol: Symbol,
+        symbol: SymbolId,
         side: Side,
         price: Price,
         qty: Qty,
@@ -366,7 +366,7 @@ mod tests {
                 last_fill_price: limit_price,
                 fee_ticks: 0,
                 ts_ns: self.next_ts(),
-                symbol: order.symbol.clone(),
+                symbol: order.symbol,
                 side: order.side,
             });
 
@@ -378,14 +378,14 @@ mod tests {
                     last_fill_price: fill_price,
                     fee_ticks: 0,
                     ts_ns: self.next_ts(),
-                    symbol: order.symbol.clone(),
+                    symbol: order.symbol,
                     side: order.side,
                 });
             } else {
                 self.live_orders.insert(
                     order.client_order_id,
                     PassiveLiveOrder {
-                        symbol: order.symbol.clone(),
+                        symbol: order.symbol,
                         side: order.side,
                         price: limit_price,
                         qty: order.qty,
@@ -471,7 +471,7 @@ mod tests {
             };
             self.placed_initial = true;
             out.push(Intent::PlaceLimit {
-                symbol: ctx.symbol.clone(),
+                symbol: ctx.symbol,
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
@@ -494,7 +494,7 @@ mod tests {
             };
             self.placed_after_fill = true;
             out.push(Intent::PlaceLimit {
-                symbol: ctx.symbol.clone(),
+                symbol: ctx.symbol,
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
@@ -532,7 +532,7 @@ mod tests {
             };
             self.fired = true;
             out.push(Intent::PlaceLimit {
-                symbol: ctx.symbol.clone(),
+                symbol: ctx.symbol,
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
@@ -567,7 +567,7 @@ mod tests {
             };
             self.placed = true;
             out.push(Intent::PlaceLimit {
-                symbol: ctx.symbol.clone(),
+                symbol: ctx.symbol,
                 side: Side::Bid,
                 price: bid,
                 qty: Qty::new(1).unwrap(),
@@ -579,9 +579,9 @@ mod tests {
 
     #[test]
     fn snapshot_then_delta_triggers_fill_and_position() {
-        let symbol = Symbol::new("BTC-USD").unwrap();
+        let symbol = SymbolId::from_u32(1);
         let mut engine = Engine::new(
-            OrderBook::new(symbol.clone()),
+            OrderBook::new(symbol),
             Portfolio::new(),
             Oms::new(),
             RiskEngine::new(),
@@ -591,7 +591,7 @@ mod tests {
 
         let snapshot = MarketEvent::L2Snapshot {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
             asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
         };
@@ -599,7 +599,7 @@ mod tests {
 
         let delta = MarketEvent::L2Delta {
             ts_ns: 2,
-            symbol: symbol.clone(),
+            symbol,
             updates: vec![LevelUpdate {
                 side: Side::Bid,
                 price: Price::new(100).unwrap(),
@@ -608,14 +608,14 @@ mod tests {
         };
         assert!(engine.on_market_event(&delta));
 
-        assert_eq!(engine.position_lots(&symbol), 1);
+        assert_eq!(engine.position_lots(symbol), 1);
     }
 
     #[test]
     fn execution_report_follow_up_intents_are_processed() {
-        let symbol = Symbol::new("BTC-USD").unwrap();
+        let symbol = SymbolId::from_u32(1);
         let mut engine = Engine::new(
-            OrderBook::new(symbol.clone()),
+            OrderBook::new(symbol),
             Portfolio::new(),
             Oms::new(),
             RiskEngine::new(),
@@ -625,19 +625,19 @@ mod tests {
 
         let snapshot = MarketEvent::L2Snapshot {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
             asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
         };
         assert!(engine.on_market_event(&snapshot));
-        assert_eq!(engine.position_lots(&symbol), 2);
+        assert_eq!(engine.position_lots(symbol), 2);
     }
 
     #[test]
     fn timer_tick_routes_strategy_intents() {
-        let symbol = Symbol::new("BTC-USD").unwrap();
+        let symbol = SymbolId::from_u32(1);
         let mut engine = Engine::new(
-            OrderBook::new(symbol.clone()),
+            OrderBook::new(symbol),
             Portfolio::new(),
             Oms::new(),
             RiskEngine::new(),
@@ -647,21 +647,21 @@ mod tests {
 
         let snapshot = MarketEvent::L2Snapshot {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
             asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
         };
         assert!(engine.on_market_event(&snapshot));
-        assert_eq!(engine.position_lots(&symbol), 0);
+        assert_eq!(engine.position_lots(symbol), 0);
 
-        engine.on_timer(2, &symbol);
-        assert_eq!(engine.position_lots(&symbol), 1);
+        engine.on_timer(2, symbol);
+        assert_eq!(engine.position_lots(symbol), 1);
     }
 
     #[test]
     fn passive_fill_triggers_when_market_moves_through_resting_order() {
-        let symbol = Symbol::new("BTC-USD").unwrap();
-        let shared_book = Rc::new(RefCell::new(OrderBook::new(symbol.clone())));
+        let symbol = SymbolId::from_u32(1);
+        let shared_book = Rc::new(RefCell::new(OrderBook::new(symbol)));
         let venue = PassiveFillVenue::new(shared_book.clone());
         let mut engine = Engine::with_shared_book(
             shared_book,
@@ -674,16 +674,16 @@ mod tests {
 
         let snapshot = MarketEvent::L2Snapshot {
             ts_ns: 1,
-            symbol: symbol.clone(),
+            symbol,
             bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
             asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
         };
         assert!(engine.on_market_event(&snapshot));
-        assert_eq!(engine.position_lots(&symbol), 0);
+        assert_eq!(engine.position_lots(symbol), 0);
 
         let delta = MarketEvent::L2Delta {
             ts_ns: 2,
-            symbol: symbol.clone(),
+            symbol,
             updates: vec![LevelUpdate {
                 side: Side::Ask,
                 price: Price::new(100).unwrap(),
@@ -691,6 +691,6 @@ mod tests {
             }],
         };
         assert!(engine.on_market_event(&delta));
-        assert_eq!(engine.position_lots(&symbol), 1);
+        assert_eq!(engine.position_lots(symbol), 1);
     }
 }

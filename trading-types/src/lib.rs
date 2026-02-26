@@ -1,4 +1,4 @@
-use lob_core::{Price, Qty, Side, Symbol};
+use lob_core::{Price, Qty, Side, SymbolId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -35,7 +35,7 @@ pub enum OrderStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrderRequest {
     pub client_order_id: ClientOrderId,
-    pub symbol: Symbol,
+    pub symbol: SymbolId,
     pub side: Side,
     pub order_type: OrderType,
     pub price: Option<Price>,
@@ -54,14 +54,14 @@ pub struct ExecutionReport {
     /// Incremental fee for this specific report (delta), not cumulative lifetime fee.
     pub fee_ticks: i64,
     pub ts_ns: u64,
-    pub symbol: Symbol,
+    pub symbol: SymbolId,
     pub side: Side,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Intent {
     PlaceLimit {
-        symbol: Symbol,
+        symbol: SymbolId,
         side: Side,
         price: Price,
         qty: Qty,
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn intent_serde_round_trip() {
         let intent = Intent::PlaceLimit {
-            symbol: Symbol::new("BTC-USD").unwrap(),
+            symbol: SymbolId::from_u32(7),
             side: Side::Bid,
             price: Price::new(100).unwrap(),
             qty: Qty::new(2).unwrap(),
