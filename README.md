@@ -13,7 +13,7 @@ Repository name: orderbook-replay-lab-rs.
 - Generates synthetic logs to avoid external data dependencies.
 
 ## Architecture
-- `core`: domain types and invariants (Side, Symbol, Price, Qty, MarketEvent).
+- `core`: domain types and invariants (Side, SymbolId, Price, Qty, MarketEvent).
 - `codec`: JSON-line format encoder/decoder for deterministic replay.
 - `replay`: streaming reader for event logs (line-by-line).
 - `orderbook`: minimal single-symbol L2 book with best bid/ask.
