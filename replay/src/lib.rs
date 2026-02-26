@@ -66,43 +66,80 @@ impl ReplayReader {
     }
 
     fn next_event_bin(&mut self) -> Result<Option<MarketEvent>, ReplayError> {
-        let mut header_buf = [0u8; codec::BIN_RECORD_HEADER_LEN];
+        let mut prefix_buf = [0u8; 4];
         let mut read = 0usize;
-        while read < header_buf.len() {
-            let n = self.reader.read(&mut header_buf[read..])?;
+        while read < prefix_buf.len() {
+            let n = self.reader.read(&mut prefix_buf[read..])?;
             if n == 0 {
                 if read == 0 {
                     return Ok(None);
                 }
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
-                    "truncated binary record header",
+                    "truncated binary record prefix",
                 )
                 .into());
             }
             read += n;
         }
 
-        let header = codec::decode_event_bin_header(&header_buf)?;
-        let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
-        self.bin_buf.resize(record_len, 0);
-        self.bin_buf[..codec::BIN_RECORD_HEADER_LEN].copy_from_slice(&header_buf);
-        let mut read = 0usize;
-        while read < header.payload_len {
-            let start = codec::BIN_RECORD_HEADER_LEN + read;
-            let n = self.reader.read(&mut self.bin_buf[start..])?;
-            if n == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "truncated binary payload",
-                )
-                .into());
-            }
-            read += n;
-        }
+        if prefix_buf == codec::BIN_RECORD_MAGIC {
+            let mut header_buf = [0u8; codec::BIN_RECORD_HEADER_LEN];
+            header_buf[..4].copy_from_slice(&prefix_buf);
 
-        let event = codec::decode_event_bin_record(&self.bin_buf)?;
-        Ok(Some(event))
+            let mut read = 4usize;
+            while read < header_buf.len() {
+                let n = self.reader.read(&mut header_buf[read..])?;
+                if n == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "truncated binary record header",
+                    )
+                    .into());
+                }
+                read += n;
+            }
+
+            let header = codec::decode_event_bin_header(&header_buf)?;
+            let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
+            self.bin_buf.resize(record_len, 0);
+            self.bin_buf[..codec::BIN_RECORD_HEADER_LEN].copy_from_slice(&header_buf);
+
+            let mut read = 0usize;
+            while read < header.payload_len {
+                let start = codec::BIN_RECORD_HEADER_LEN + read;
+                let n = self.reader.read(&mut self.bin_buf[start..])?;
+                if n == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "truncated binary payload",
+                    )
+                    .into());
+                }
+                read += n;
+            }
+
+            let event = codec::decode_event_bin_record(&self.bin_buf)?;
+            Ok(Some(event))
+        } else {
+            let payload_len = u32::from_le_bytes(prefix_buf) as usize;
+            self.bin_buf.resize(payload_len, 0);
+            let mut read = 0usize;
+            while read < payload_len {
+                let n = self.reader.read(&mut self.bin_buf[read..])?;
+                if n == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "truncated legacy binary payload",
+                    )
+                    .into());
+                }
+                read += n;
+            }
+
+            let event = codec::decode_event_bin_payload(&self.bin_buf)?;
+            Ok(Some(event))
+        }
     }
 }
 
@@ -118,30 +155,60 @@ impl MmapReplayReader {
         if self.pos == self.mmap.len() {
             return Ok(None);
         }
-        if self.mmap.len().saturating_sub(self.pos) < codec::BIN_RECORD_HEADER_LEN {
+        if self.mmap.len().saturating_sub(self.pos) < 4 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "truncated binary record header",
+                "truncated binary record prefix",
             )
             .into());
         }
 
-        let header_slice = &self.mmap[self.pos..self.pos + codec::BIN_RECORD_HEADER_LEN];
-        let header = codec::decode_event_bin_header(header_slice)?;
-        let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
+        let prefix = [
+            self.mmap[self.pos],
+            self.mmap[self.pos + 1],
+            self.mmap[self.pos + 2],
+            self.mmap[self.pos + 3],
+        ];
 
-        if self.mmap.len().saturating_sub(self.pos) < record_len {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "truncated binary payload",
-            )
-            .into());
+        if prefix == codec::BIN_RECORD_MAGIC {
+            if self.mmap.len().saturating_sub(self.pos) < codec::BIN_RECORD_HEADER_LEN {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "truncated binary record header",
+                )
+                .into());
+            }
+
+            let header_slice = &self.mmap[self.pos..self.pos + codec::BIN_RECORD_HEADER_LEN];
+            let header = codec::decode_event_bin_header(header_slice)?;
+            let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
+            if self.mmap.len().saturating_sub(self.pos) < record_len {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "truncated binary payload",
+                )
+                .into());
+            }
+
+            let record = &self.mmap[self.pos..self.pos + record_len];
+            self.pos += record_len;
+            let event = codec::decode_event_bin_record(record)?;
+            Ok(Some(event))
+        } else {
+            let payload_len = u32::from_le_bytes(prefix) as usize;
+            let record_len = 4 + payload_len;
+            if self.mmap.len().saturating_sub(self.pos) < record_len {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "truncated legacy binary payload",
+                )
+                .into());
+            }
+            let payload = &self.mmap[self.pos + 4..self.pos + record_len];
+            self.pos += record_len;
+            let event = codec::decode_event_bin_payload(payload)?;
+            Ok(Some(event))
         }
-
-        let record = &self.mmap[self.pos..self.pos + record_len];
-        self.pos += record_len;
-        let event = codec::decode_event_bin_record(record)?;
-        Ok(Some(event))
     }
 }
 
@@ -268,6 +335,51 @@ mod tests {
         }
 
         assert_eq!(format!("{:?}", json_book), format!("{:?}", bin_book));
+
+        Ok(())
+    }
+
+    #[cfg(feature = "bin")]
+    #[test]
+    fn legacy_bin_len_prefix_is_still_supported() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let bin_path = dir.path().join("legacy-events.bin");
+
+        let symbol = Symbol::new("LEGACY-USD")?;
+        let events = vec![
+            MarketEvent::L2Delta {
+                ts_ns: 1,
+                symbol: symbol.clone(),
+                updates: vec![LevelUpdate {
+                    side: Side::Bid,
+                    price: Price::new(100)?,
+                    qty: Qty::new(2)?,
+                }],
+            },
+            MarketEvent::L2Delta {
+                ts_ns: 2,
+                symbol,
+                updates: vec![LevelUpdate {
+                    side: Side::Ask,
+                    price: Price::new(101)?,
+                    qty: Qty::new(3)?,
+                }],
+            },
+        ];
+
+        let mut file = File::create(&bin_path)?;
+        for event in &events {
+            let record = codec::encode_event_bin_record(event)?;
+            let payload = &record[codec::BIN_RECORD_HEADER_LEN..];
+            let payload_len = u32::try_from(payload.len())?;
+            file.write_all(&payload_len.to_le_bytes())?;
+            file.write_all(payload)?;
+        }
+
+        let mut reader = ReplayReader::open_with_format(&bin_path, ReplayFormat::Bin)?;
+        assert_eq!(reader.next_event()?.as_ref(), Some(&events[0]));
+        assert_eq!(reader.next_event()?.as_ref(), Some(&events[1]));
+        assert_eq!(reader.next_event()?, None);
 
         Ok(())
     }
