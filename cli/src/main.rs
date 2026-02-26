@@ -444,14 +444,14 @@ impl<V: ExecutionVenue> CountingVenue<V> {
 }
 
 impl<V: ExecutionVenue> ExecutionVenue for CountingVenue<V> {
-    fn submit(&mut self, req: &oms::OrderRequest) -> Vec<trading_types::ExecutionReport> {
+    fn submit(&mut self, req: &oms::OrderRequest, out: &mut Vec<trading_types::ExecutionReport>) {
         {
             let mut counters = self.counters.borrow_mut();
             counters.orders_sent += 1;
         }
 
-        let reports = self.inner.submit(req);
-        let fills = reports
+        self.inner.submit(req, out);
+        let fills = out
             .iter()
             .filter(|report| {
                 matches!(
@@ -465,8 +465,6 @@ impl<V: ExecutionVenue> ExecutionVenue for CountingVenue<V> {
             let mut counters = self.counters.borrow_mut();
             counters.fills_count += fills;
         }
-
-        reports
     }
 }
 

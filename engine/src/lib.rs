@@ -23,6 +23,9 @@ pub struct Engine {
     strategy: Box<dyn Strategy>,
     venue: Box<dyn ExecutionVenue>,
     latency: LatencyStats,
+    intent_queue: VecDeque<Intent>,
+    intent_buffer: Vec<Intent>,
+    report_buffer: Vec<ExecutionReport>,
 }
 
 impl Engine {
@@ -60,6 +63,9 @@ impl Engine {
             strategy,
             venue,
             latency: LatencyStats::new(),
+            intent_queue: VecDeque::new(),
+            intent_buffer: Vec::new(),
+            report_buffer: Vec::new(),
         }
     }
 
@@ -73,18 +79,29 @@ impl Engine {
         }
 
         let (ts_ns, symbol) = match event {
-            MarketEvent::L2Delta { ts_ns, symbol, .. } => (*ts_ns, symbol.clone()),
-            MarketEvent::L2Snapshot { ts_ns, symbol, .. } => (*ts_ns, symbol.clone()),
+            MarketEvent::L2Delta { ts_ns, symbol, .. } => (*ts_ns, symbol),
+            MarketEvent::L2Snapshot { ts_ns, symbol, .. } => (*ts_ns, symbol),
         };
 
-        let mut queue = VecDeque::new();
-        let passive_reports = self.venue.on_book_update();
-        self.process_reports(passive_reports, &mut queue);
+        let mut queue = std::mem::take(&mut self.intent_queue);
+        let mut intents = std::mem::take(&mut self.intent_buffer);
+        let mut reports = std::mem::take(&mut self.report_buffer);
 
-        let ctx = self.build_context(ts_ns, &symbol);
-        let intents = self.strategy.on_market_event(&ctx, event);
-        queue.extend(intents);
-        self.handle_intent_queue(ts_ns, &symbol, queue);
+        queue.clear();
+        intents.clear();
+        reports.clear();
+
+        self.venue.on_book_update(&mut reports);
+        self.process_reports(&mut reports, &mut queue, &mut intents);
+
+        let ctx = self.build_context(ts_ns, symbol);
+        self.strategy.on_market_event(&ctx, event, &mut intents);
+        queue.extend(intents.drain(..));
+        self.handle_intent_queue(ts_ns, symbol, &mut queue, &mut reports, &mut intents);
+
+        self.intent_queue = queue;
+        self.intent_buffer = intents;
+        self.report_buffer = reports;
 
         let ns = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
         self.latency.record(ns.max(1));
@@ -92,16 +109,32 @@ impl Engine {
     }
 
     pub fn on_timer(&mut self, ts_ns: u64, symbol: &Symbol) {
+        let mut queue = std::mem::take(&mut self.intent_queue);
+        let mut intents = std::mem::take(&mut self.intent_buffer);
+        let mut reports = std::mem::take(&mut self.report_buffer);
+
+        queue.clear();
+        intents.clear();
+        reports.clear();
+
         let ctx = self.build_context(ts_ns, symbol);
-        let intents = self.strategy.on_timer(&ctx);
-        self.handle_intents(ts_ns, symbol, intents);
+        self.strategy.on_timer(&ctx, &mut intents);
+        queue.extend(intents.drain(..));
+        self.handle_intent_queue(ts_ns, symbol, &mut queue, &mut reports, &mut intents);
+
+        self.intent_queue = queue;
+        self.intent_buffer = intents;
+        self.report_buffer = reports;
     }
 
-    fn handle_intents(&mut self, ts_ns: u64, symbol: &Symbol, intents: Vec<Intent>) {
-        self.handle_intent_queue(ts_ns, symbol, VecDeque::from(intents));
-    }
-
-    fn handle_intent_queue(&mut self, ts_ns: u64, symbol: &Symbol, mut queue: VecDeque<Intent>) {
+    fn handle_intent_queue(
+        &mut self,
+        ts_ns: u64,
+        symbol: &Symbol,
+        queue: &mut VecDeque<Intent>,
+        reports: &mut Vec<ExecutionReport>,
+        intents: &mut Vec<Intent>,
+    ) {
         let mut processed_steps = 0usize;
 
         while let Some(intent) = queue.pop_front() {
@@ -124,18 +157,26 @@ impl Engine {
             let Some(request) = self.oms.apply_intent(intent, ts_ns) else {
                 continue;
             };
-            let reports = self.venue.submit(&request);
-            self.process_reports(reports, &mut queue);
+            reports.clear();
+            self.venue.submit(&request, reports);
+            self.process_reports(reports, queue, intents);
         }
     }
 
-    fn process_reports(&mut self, reports: Vec<ExecutionReport>, queue: &mut VecDeque<Intent>) {
-        for report in reports {
+    fn process_reports(
+        &mut self,
+        reports: &mut Vec<ExecutionReport>,
+        queue: &mut VecDeque<Intent>,
+        intents: &mut Vec<Intent>,
+    ) {
+        for report in reports.drain(..) {
             self.oms.on_execution_report(&report);
             self.portfolio.on_execution_report(&report);
             let report_ctx = self.build_context(report.ts_ns, &report.symbol);
-            let follow_up = self.strategy.on_execution_report(&report_ctx, &report);
-            queue.extend(follow_up);
+            intents.clear();
+            self.strategy
+                .on_execution_report(&report_ctx, &report, intents);
+            queue.extend(intents.drain(..));
         }
     }
 
@@ -192,59 +233,62 @@ mod tests {
     }
 
     impl Strategy for DummyStrategy {
-        fn on_market_event(&mut self, ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+        fn on_market_event(
+            &mut self,
+            ctx: &ContextSnapshot,
+            _event: &MarketEvent,
+            out: &mut Vec<Intent>,
+        ) {
             if self.placed {
-                return Vec::new();
+                return;
             }
             let Some((ask, _)) = ctx.best_ask else {
-                return Vec::new();
+                return;
             };
             self.placed = true;
-            vec![Intent::PlaceLimit {
+            out.push(Intent::PlaceLimit {
                 symbol: ctx.symbol.clone(),
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
                 tif: TimeInForce::Gtc,
                 tag: None,
-            }]
+            });
         }
     }
 
     struct DummyVenue;
 
     impl ExecutionVenue for DummyVenue {
-        fn submit(&mut self, req: &oms::OrderRequest) -> Vec<ExecutionReport> {
+        fn submit(&mut self, req: &oms::OrderRequest, out: &mut Vec<ExecutionReport>) {
             match req {
                 oms::OrderRequest::Place(order) => {
                     let symbol = order.symbol.clone();
                     let side = order.side;
                     let price = order.price.unwrap_or_else(|| Price::new(0).unwrap());
                     let qty = order.qty;
-                    vec![
-                        ExecutionReport {
-                            client_order_id: order.client_order_id,
-                            status: OrderStatus::Accepted,
-                            filled_qty: Qty::new(0).unwrap(),
-                            last_fill_price: price,
-                            fee_ticks: 0,
-                            ts_ns: 1,
-                            symbol: symbol.clone(),
-                            side,
-                        },
-                        ExecutionReport {
-                            client_order_id: order.client_order_id,
-                            status: OrderStatus::Filled,
-                            filled_qty: qty,
-                            last_fill_price: price,
-                            fee_ticks: 0,
-                            ts_ns: 2,
-                            symbol,
-                            side,
-                        },
-                    ]
+                    out.push(ExecutionReport {
+                        client_order_id: order.client_order_id,
+                        status: OrderStatus::Accepted,
+                        filled_qty: Qty::new(0).unwrap(),
+                        last_fill_price: price,
+                        fee_ticks: 0,
+                        ts_ns: 1,
+                        symbol: symbol.clone(),
+                        side,
+                    });
+                    out.push(ExecutionReport {
+                        client_order_id: order.client_order_id,
+                        status: OrderStatus::Filled,
+                        filled_qty: qty,
+                        last_fill_price: price,
+                        fee_ticks: 0,
+                        ts_ns: 2,
+                        symbol,
+                        side,
+                    });
                 }
-                _ => Vec::new(),
+                _ => {}
             }
         }
     }
@@ -280,12 +324,12 @@ mod tests {
     }
 
     impl ExecutionVenue for PassiveFillVenue {
-        fn submit(&mut self, req: &oms::OrderRequest) -> Vec<ExecutionReport> {
+        fn submit(&mut self, req: &oms::OrderRequest, out: &mut Vec<ExecutionReport>) {
             let oms::OrderRequest::Place(order) = req else {
-                return Vec::new();
+                return;
             };
             let Some(limit_price) = order.price else {
-                return Vec::new();
+                return;
             };
 
             let (best_bid, best_ask) = {
@@ -309,7 +353,7 @@ mod tests {
                 }),
             };
 
-            let mut reports = vec![ExecutionReport {
+            out.push(ExecutionReport {
                 client_order_id: order.client_order_id,
                 status: OrderStatus::Accepted,
                 filled_qty: Qty::new(0).unwrap(),
@@ -318,10 +362,10 @@ mod tests {
                 ts_ns: self.next_ts(),
                 symbol: order.symbol.clone(),
                 side: order.side,
-            }];
+            });
 
             if let Some(fill_price) = crossing_price {
-                reports.push(ExecutionReport {
+                out.push(ExecutionReport {
                     client_order_id: order.client_order_id,
                     status: OrderStatus::Filled,
                     filled_qty: order.qty,
@@ -342,10 +386,9 @@ mod tests {
                     },
                 );
             }
-            reports
         }
 
-        fn on_book_update(&mut self) -> Vec<ExecutionReport> {
+        fn on_book_update(&mut self, out: &mut Vec<ExecutionReport>) {
             let (best_bid, best_ask) = {
                 let book = self.book.borrow();
                 (book.best_bid(), book.best_ask())
@@ -353,7 +396,6 @@ mod tests {
 
             let mut order_ids: Vec<ClientOrderId> = self.live_orders.keys().copied().collect();
             order_ids.sort_by_key(|id| id.0);
-            let mut reports = Vec::new();
             for client_order_id in order_ids {
                 let Some(order) = self.live_orders.get(&client_order_id).cloned() else {
                     continue;
@@ -380,7 +422,7 @@ mod tests {
                 };
 
                 self.live_orders.remove(&client_order_id);
-                reports.push(ExecutionReport {
+                out.push(ExecutionReport {
                     client_order_id,
                     status: OrderStatus::Filled,
                     filled_qty: order.qty,
@@ -391,7 +433,6 @@ mod tests {
                     side: order.side,
                 });
             }
-            reports
         }
     }
 
@@ -410,44 +451,50 @@ mod tests {
     }
 
     impl Strategy for ReactiveFollowUpStrategy {
-        fn on_market_event(&mut self, ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+        fn on_market_event(
+            &mut self,
+            ctx: &ContextSnapshot,
+            _event: &MarketEvent,
+            out: &mut Vec<Intent>,
+        ) {
             if self.placed_initial {
-                return Vec::new();
+                return;
             }
             let Some((ask, _)) = ctx.best_ask else {
-                return Vec::new();
+                return;
             };
             self.placed_initial = true;
-            vec![Intent::PlaceLimit {
+            out.push(Intent::PlaceLimit {
                 symbol: ctx.symbol.clone(),
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
                 tif: TimeInForce::Gtc,
                 tag: None,
-            }]
+            });
         }
 
         fn on_execution_report(
             &mut self,
             ctx: &ContextSnapshot,
             report: &ExecutionReport,
-        ) -> Vec<Intent> {
+            out: &mut Vec<Intent>,
+        ) {
             if self.placed_after_fill || report.status != OrderStatus::Filled {
-                return Vec::new();
+                return;
             }
             let Some((ask, _)) = ctx.best_ask else {
-                return Vec::new();
+                return;
             };
             self.placed_after_fill = true;
-            vec![Intent::PlaceLimit {
+            out.push(Intent::PlaceLimit {
                 symbol: ctx.symbol.clone(),
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
                 tif: TimeInForce::Gtc,
                 tag: None,
-            }]
+            });
         }
     }
 
@@ -462,26 +509,30 @@ mod tests {
     }
 
     impl Strategy for TimerOnlyStrategy {
-        fn on_market_event(&mut self, _ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
-            Vec::new()
+        fn on_market_event(
+            &mut self,
+            _ctx: &ContextSnapshot,
+            _event: &MarketEvent,
+            _out: &mut Vec<Intent>,
+        ) {
         }
 
-        fn on_timer(&mut self, ctx: &ContextSnapshot) -> Vec<Intent> {
+        fn on_timer(&mut self, ctx: &ContextSnapshot, out: &mut Vec<Intent>) {
             if self.fired {
-                return Vec::new();
+                return;
             }
             let Some((ask, _)) = ctx.best_ask else {
-                return Vec::new();
+                return;
             };
             self.fired = true;
-            vec![Intent::PlaceLimit {
+            out.push(Intent::PlaceLimit {
                 symbol: ctx.symbol.clone(),
                 side: Side::Bid,
                 price: ask,
                 qty: Qty::new(1).unwrap(),
                 tif: TimeInForce::Gtc,
                 tag: None,
-            }]
+            });
         }
     }
 
@@ -496,22 +547,27 @@ mod tests {
     }
 
     impl Strategy for RestingBidStrategy {
-        fn on_market_event(&mut self, ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
+        fn on_market_event(
+            &mut self,
+            ctx: &ContextSnapshot,
+            _event: &MarketEvent,
+            out: &mut Vec<Intent>,
+        ) {
             if self.placed {
-                return Vec::new();
+                return;
             }
             let Some((bid, _)) = ctx.best_bid else {
-                return Vec::new();
+                return;
             };
             self.placed = true;
-            vec![Intent::PlaceLimit {
+            out.push(Intent::PlaceLimit {
                 symbol: ctx.symbol.clone(),
                 side: Side::Bid,
                 price: bid,
                 qty: Qty::new(1).unwrap(),
                 tif: TimeInForce::Gtc,
                 tag: None,
-            }]
+            });
         }
     }
 
