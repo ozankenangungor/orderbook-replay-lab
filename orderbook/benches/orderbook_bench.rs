@@ -3,7 +3,7 @@ use std::time::Duration;
 use criterion::{
     black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
 };
-use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
+use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, SymbolId};
 use orderbook::OrderBook;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -11,8 +11,8 @@ use rand::{Rng, SeedableRng};
 const BASE_BID: i64 = 100_000;
 const BASE_ASK: i64 = 100_001;
 
-fn seed_book(symbol: &Symbol, levels: usize) -> OrderBook {
-    let mut book = OrderBook::new(symbol.clone());
+fn seed_book(symbol: SymbolId, levels: usize) -> OrderBook {
+    let mut book = OrderBook::new(symbol);
     let bids = levels / 2;
     let asks = levels - bids;
     let mut updates = Vec::with_capacity(levels);
@@ -34,13 +34,13 @@ fn seed_book(symbol: &Symbol, levels: usize) -> OrderBook {
 
     book.apply(&MarketEvent::L2Delta {
         ts_ns: 0,
-        symbol: symbol.clone(),
+        symbol,
         updates,
     });
     book
 }
 
-fn generate_events(symbol: &Symbol, levels: usize, updates: usize, seed: u64) -> Vec<MarketEvent> {
+fn generate_events(symbol: SymbolId, levels: usize, updates: usize, seed: u64) -> Vec<MarketEvent> {
     let bids = levels / 2;
     let asks = levels - bids;
     let mut bid_prices: Vec<i64> = (0..bids).map(|i| BASE_BID - i as i64).collect();
@@ -95,7 +95,7 @@ fn generate_events(symbol: &Symbol, levels: usize, updates: usize, seed: u64) ->
         };
         events.push(MarketEvent::L2Delta {
             ts_ns: idx,
-            symbol: symbol.clone(),
+            symbol,
             updates: vec![update],
         });
     }
@@ -106,13 +106,13 @@ fn generate_events(symbol: &Symbol, levels: usize, updates: usize, seed: u64) ->
 fn bench_orderbook(c: &mut Criterion) {
     let mut group = c.benchmark_group("orderbook_apply");
     for (label, levels, updates) in [("small", 200, 1000), ("medium", 2000, 2000)] {
-        let symbol = Symbol::new("BENCH-USD").unwrap();
-        let events = generate_events(&symbol, levels, updates, levels as u64);
+        let symbol = SymbolId::from_u32(1);
+        let events = generate_events(symbol, levels, updates, levels as u64);
 
         group.throughput(Throughput::Elements(events.len() as u64));
         group.bench_with_input(BenchmarkId::new("updates", label), &levels, |b, _| {
             b.iter_batched(
-                || seed_book(&symbol, levels),
+                || seed_book(symbol, levels),
                 |mut book| {
                     for event in &events {
                         book.apply(event);
@@ -127,7 +127,7 @@ fn bench_orderbook(c: &mut Criterion) {
             &levels,
             |b, _| {
                 b.iter_batched(
-                    || seed_book(&symbol, levels),
+                    || seed_book(symbol, levels),
                     |mut book| {
                         for event in &events {
                             book.apply(event);
