@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
+use criterion::{
+    black_box, criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput,
+};
 use lob_core::{LevelUpdate, MarketEvent, Price, Qty, Side, Symbol};
 use orderbook::OrderBook;
 use rand::rngs::StdRng;
@@ -119,6 +121,24 @@ fn bench_orderbook(c: &mut Criterion) {
                 BatchSize::SmallInput,
             );
         });
+
+        group.bench_with_input(
+            BenchmarkId::new("updates_with_top_of_book", label),
+            &levels,
+            |b, _| {
+                b.iter_batched(
+                    || seed_book(&symbol, levels),
+                    |mut book| {
+                        for event in &events {
+                            book.apply(event);
+                            black_box(book.best_bid());
+                            black_box(book.best_ask());
+                        }
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
     }
     group.finish();
 }
