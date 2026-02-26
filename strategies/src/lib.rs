@@ -57,19 +57,19 @@ impl TwapStrategy {
         }
     }
 
-    fn maybe_place(&mut self, ctx: &ContextSnapshot) -> Vec<Intent> {
+    fn maybe_place(&mut self, ctx: &ContextSnapshot, out: &mut Vec<Intent>) {
         if self.remaining_qty_lots == 0 || self.in_flight {
-            return Vec::new();
+            return;
         }
 
         let next_ts = self.next_ts_ns.get_or_insert(ctx.ts_ns);
         if ctx.ts_ns < *next_ts {
-            return Vec::new();
+            return;
         }
 
         let qty_lots = self.remaining_qty_lots.abs().min(self.slice_qty_lots);
         if qty_lots == 0 {
-            return Vec::new();
+            return;
         }
 
         let (side, price) = if self.remaining_qty_lots > 0 {
@@ -78,21 +78,24 @@ impl TwapStrategy {
             (Side::Ask, ctx.best_bid.map(|(price, _)| price))
         };
         let Some(price) = price else {
-            return Vec::new();
+            return;
+        };
+        let Ok(qty) = Qty::new(qty_lots) else {
+            return;
         };
 
         self.in_flight = true;
         self.last_reported_qty = 0;
         *next_ts = ctx.ts_ns.saturating_add(self.interval_ns.max(1));
 
-        vec![Intent::PlaceLimit {
+        out.push(Intent::PlaceLimit {
             symbol: ctx.symbol.clone(),
             side,
             price,
-            qty: Qty::new(qty_lots).expect("qty"),
+            qty,
             tif: TimeInForce::Gtc,
             tag: None,
-        }]
+        });
     }
 
     fn on_report(&mut self, report: &ExecutionReport) {
@@ -149,9 +152,10 @@ impl MmStrategy {
         }
     }
 
-    fn quote(&mut self, ctx: &ContextSnapshot) -> Vec<Intent> {
+    fn quote(&mut self, ctx: &ContextSnapshot, out: &mut Vec<Intent>) {
         let Some(mid) = ctx.mid_price else {
-            return self.cancel_all();
+            self.cancel_all(out);
+            return;
         };
 
         let skew = (ctx.position_lots as i128 * self.skew_per_lot_ticks as i128)
@@ -169,14 +173,19 @@ impl MmStrategy {
             ask_ticks = bid_ticks + 1;
         }
 
-        let bid_price = Price::new(bid_ticks).expect("bid price");
-        let ask_price = Price::new(ask_ticks).expect("ask price");
-        let qty = Qty::new(self.quote_qty_lots).expect("qty");
+        let Ok(bid_price) = Price::new(bid_ticks) else {
+            return;
+        };
+        let Ok(ask_price) = Price::new(ask_ticks) else {
+            return;
+        };
+        let Ok(qty) = Qty::new(self.quote_qty_lots) else {
+            return;
+        };
 
-        let mut intents = Vec::new();
         if let Some(client_order_id) = self.bid_order_id {
             if !self.pending_bid && self.bid_price != Some(bid_price) {
-                intents.push(Intent::Replace {
+                out.push(Intent::Replace {
                     client_order_id,
                     new_price: bid_price,
                     new_qty: qty,
@@ -185,7 +194,7 @@ impl MmStrategy {
                 self.bid_price = Some(bid_price);
             }
         } else if !self.pending_bid {
-            intents.push(Intent::PlaceLimit {
+            out.push(Intent::PlaceLimit {
                 symbol: ctx.symbol.clone(),
                 side: Side::Bid,
                 price: bid_price,
@@ -198,7 +207,7 @@ impl MmStrategy {
 
         if let Some(client_order_id) = self.ask_order_id {
             if !self.pending_ask && self.ask_price != Some(ask_price) {
-                intents.push(Intent::Replace {
+                out.push(Intent::Replace {
                     client_order_id,
                     new_price: ask_price,
                     new_qty: qty,
@@ -207,7 +216,7 @@ impl MmStrategy {
                 self.ask_price = Some(ask_price);
             }
         } else if !self.pending_ask {
-            intents.push(Intent::PlaceLimit {
+            out.push(Intent::PlaceLimit {
                 symbol: ctx.symbol.clone(),
                 side: Side::Ask,
                 price: ask_price,
@@ -217,23 +226,19 @@ impl MmStrategy {
             });
             self.pending_ask = true;
         }
-
-        intents
     }
 
-    fn cancel_all(&mut self) -> Vec<Intent> {
-        let mut intents = Vec::new();
+    fn cancel_all(&mut self, out: &mut Vec<Intent>) {
         if let Some(client_order_id) = self.bid_order_id.take() {
-            intents.push(Intent::Cancel { client_order_id });
+            out.push(Intent::Cancel { client_order_id });
         }
         if let Some(client_order_id) = self.ask_order_id.take() {
-            intents.push(Intent::Cancel { client_order_id });
+            out.push(Intent::Cancel { client_order_id });
         }
         self.bid_price = None;
         self.ask_price = None;
         self.pending_bid = false;
         self.pending_ask = false;
-        intents
     }
 
     fn on_report(&mut self, report: &ExecutionReport) {
@@ -278,58 +283,68 @@ impl MmStrategy {
 }
 
 impl Strategy for NoopStrategy {
-    fn on_market_event(&mut self, _ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
-        Vec::new()
-    }
-
-    fn on_timer(&mut self, _ctx: &ContextSnapshot) -> Vec<Intent> {
-        Vec::new()
+    fn on_market_event(
+        &mut self,
+        _ctx: &ContextSnapshot,
+        _event: &MarketEvent,
+        _out: &mut Vec<Intent>,
+    ) {
     }
 
     fn on_execution_report(
         &mut self,
         _ctx: &ContextSnapshot,
         _report: &ExecutionReport,
-    ) -> Vec<Intent> {
-        Vec::new()
+        _out: &mut Vec<Intent>,
+    ) {
     }
 }
 
 impl Strategy for TwapStrategy {
-    fn on_market_event(&mut self, ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
-        self.maybe_place(ctx)
+    fn on_market_event(
+        &mut self,
+        ctx: &ContextSnapshot,
+        _event: &MarketEvent,
+        out: &mut Vec<Intent>,
+    ) {
+        self.maybe_place(ctx, out);
     }
 
-    fn on_timer(&mut self, ctx: &ContextSnapshot) -> Vec<Intent> {
-        self.maybe_place(ctx)
+    fn on_timer(&mut self, ctx: &ContextSnapshot, out: &mut Vec<Intent>) {
+        self.maybe_place(ctx, out);
     }
 
     fn on_execution_report(
         &mut self,
         _ctx: &ContextSnapshot,
         report: &ExecutionReport,
-    ) -> Vec<Intent> {
+        _out: &mut Vec<Intent>,
+    ) {
         self.on_report(report);
-        Vec::new()
     }
 }
 
 impl Strategy for MmStrategy {
-    fn on_market_event(&mut self, ctx: &ContextSnapshot, _event: &MarketEvent) -> Vec<Intent> {
-        self.quote(ctx)
+    fn on_market_event(
+        &mut self,
+        ctx: &ContextSnapshot,
+        _event: &MarketEvent,
+        out: &mut Vec<Intent>,
+    ) {
+        self.quote(ctx, out);
     }
 
-    fn on_timer(&mut self, ctx: &ContextSnapshot) -> Vec<Intent> {
-        self.quote(ctx)
+    fn on_timer(&mut self, ctx: &ContextSnapshot, out: &mut Vec<Intent>) {
+        self.quote(ctx, out);
     }
 
     fn on_execution_report(
         &mut self,
         _ctx: &ContextSnapshot,
         report: &ExecutionReport,
-    ) -> Vec<Intent> {
+        _out: &mut Vec<Intent>,
+    ) {
         self.on_report(report);
-        Vec::new()
     }
 }
 
@@ -373,8 +388,11 @@ mod tests {
             updates: vec![],
         };
 
-        assert!(strategy.on_market_event(&ctx, &event).is_empty());
-        assert!(strategy.on_timer(&ctx).is_empty());
+        let mut intents = Vec::new();
+        strategy.on_market_event(&ctx, &event, &mut intents);
+        assert!(intents.is_empty());
+        strategy.on_timer(&ctx, &mut intents);
+        assert!(intents.is_empty());
     }
 
     #[test]
@@ -388,7 +406,8 @@ mod tests {
             symbol: symbol.clone(),
             updates: vec![],
         };
-        let intents = strategy.on_market_event(&ctx, &event);
+        let mut intents = Vec::new();
+        strategy.on_market_event(&ctx, &event, &mut intents);
         assert_eq!(intents.len(), 1);
         assert!(matches!(
             intents[0],
@@ -411,12 +430,14 @@ mod tests {
             symbol: symbol.clone(),
             side: Side::Bid,
         };
-        strategy.on_execution_report(&ctx, &report);
+        strategy.on_execution_report(&ctx, &report, &mut intents);
 
         ctx.ts_ns = 3;
-        let intents = strategy.on_market_event(&ctx, &event);
+        intents.clear();
+        strategy.on_market_event(&ctx, &event, &mut intents);
         assert_eq!(intents.len(), 1);
 
+        intents.clear();
         strategy.on_execution_report(
             &ctx,
             &ExecutionReport {
@@ -424,12 +445,14 @@ mod tests {
                 ts_ns: 4,
                 ..report.clone()
             },
+            &mut intents,
         );
 
         ctx.ts_ns = 5;
-        let intents = strategy.on_market_event(&ctx, &event);
+        strategy.on_market_event(&ctx, &event, &mut intents);
         assert_eq!(intents.len(), 1);
 
+        intents.clear();
         strategy.on_execution_report(
             &ctx,
             &ExecutionReport {
@@ -437,10 +460,11 @@ mod tests {
                 ts_ns: 6,
                 ..report
             },
+            &mut intents,
         );
 
         ctx.ts_ns = 7;
-        let intents = strategy.on_market_event(&ctx, &event);
+        strategy.on_market_event(&ctx, &event, &mut intents);
         assert!(intents.is_empty());
     }
 
@@ -455,12 +479,13 @@ mod tests {
             updates: vec![],
         };
 
-        let intents = mm.on_market_event(&ctx, &event);
+        let mut intents = Vec::new();
+        mm.on_market_event(&ctx, &event, &mut intents);
         assert_eq!(intents.len(), 2);
 
         let mut bid_price = None;
         let mut ask_price = None;
-        for intent in intents {
+        for intent in &intents {
             if let Intent::PlaceLimit { side, price, .. } = intent {
                 match side {
                     Side::Bid => bid_price = Some(price.ticks()),
@@ -474,11 +499,12 @@ mod tests {
 
         let mut mm = MmStrategy::new(2, 1, 1);
         let skew_ctx = ctx_with_book(1, symbol, 100, 102, 5);
-        let intents = mm.on_market_event(&skew_ctx, &event);
+        intents.clear();
+        mm.on_market_event(&skew_ctx, &event, &mut intents);
 
         let mut bid_price = None;
         let mut ask_price = None;
-        for intent in intents {
+        for intent in &intents {
             if let Intent::PlaceLimit { side, price, .. } = intent {
                 match side {
                     Side::Bid => bid_price = Some(price.ticks()),

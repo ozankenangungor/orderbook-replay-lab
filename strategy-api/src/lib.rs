@@ -43,17 +43,20 @@ impl ContextSnapshot {
 }
 
 pub trait Strategy {
-    fn on_market_event(&mut self, ctx: &ContextSnapshot, event: &MarketEvent) -> Vec<Intent>;
+    fn on_market_event(
+        &mut self,
+        ctx: &ContextSnapshot,
+        event: &MarketEvent,
+        out: &mut Vec<Intent>,
+    );
 
-    fn on_timer(&mut self, _ctx: &ContextSnapshot) -> Vec<Intent> {
-        Vec::new()
-    }
+    fn on_timer(&mut self, _ctx: &ContextSnapshot, _out: &mut Vec<Intent>) {}
 
     fn on_execution_report(
         &mut self,
         _ctx: &ContextSnapshot,
         _report: &ExecutionReport,
-    ) -> Vec<Intent> {
-        Vec::new()
+        _out: &mut Vec<Intent>,
+    ) {
     }
 }
