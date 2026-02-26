@@ -268,35 +268,34 @@ mod tests {
 
     impl ExecutionVenue for DummyVenue {
         fn submit(&mut self, req: &oms::OrderRequest, out: &mut Vec<ExecutionReport>) {
-            match req {
-                oms::OrderRequest::Place(order) => {
-                    let symbol = order.symbol.clone();
-                    let side = order.side;
-                    let price = order.price.unwrap_or_else(|| Price::new(0).unwrap());
-                    let qty = order.qty;
-                    out.push(ExecutionReport {
-                        client_order_id: order.client_order_id,
-                        status: OrderStatus::Accepted,
-                        filled_qty: Qty::new(0).unwrap(),
-                        last_fill_price: price,
-                        fee_ticks: 0,
-                        ts_ns: 1,
-                        symbol: symbol.clone(),
-                        side,
-                    });
-                    out.push(ExecutionReport {
-                        client_order_id: order.client_order_id,
-                        status: OrderStatus::Filled,
-                        filled_qty: qty,
-                        last_fill_price: price,
-                        fee_ticks: 0,
-                        ts_ns: 2,
-                        symbol,
-                        side,
-                    });
-                }
-                _ => {}
-            }
+            let oms::OrderRequest::Place(order) = req else {
+                return;
+            };
+
+            let symbol = order.symbol.clone();
+            let side = order.side;
+            let price = order.price.unwrap_or_else(|| Price::new(0).unwrap());
+            let qty = order.qty;
+            out.push(ExecutionReport {
+                client_order_id: order.client_order_id,
+                status: OrderStatus::Accepted,
+                filled_qty: Qty::new(0).unwrap(),
+                last_fill_price: price,
+                fee_ticks: 0,
+                ts_ns: 1,
+                symbol: symbol.clone(),
+                side,
+            });
+            out.push(ExecutionReport {
+                client_order_id: order.client_order_id,
+                status: OrderStatus::Filled,
+                filled_qty: qty,
+                last_fill_price: price,
+                fee_ticks: 0,
+                ts_ns: 2,
+                symbol,
+                side,
+            });
         }
     }
 
