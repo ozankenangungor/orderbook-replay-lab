@@ -235,6 +235,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "crc32fast",
+ "criterion",
  "lob-core",
  "serde",
  "serde_json",
