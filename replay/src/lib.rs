@@ -4,12 +4,14 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use lob_core::{MarketEvent, SymbolTable};
+use lob_core::{CoreError, MarketEvent, SymbolTable};
 
 #[derive(Debug, Error)]
 pub enum ReplayError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("core error: {0}")]
+    Core(#[from] CoreError),
     #[error("decode error: {0}")]
     Decode(#[from] codec::CodecError),
 }
@@ -42,6 +44,19 @@ impl ReplayReader {
 
     pub fn open_with_format(path: &Path, format: ReplayFormat) -> Result<Self, ReplayError> {
         Self::open_with_format_and_symbols(path, format, SymbolTable::new())
+    }
+
+    pub fn open_with_format_and_predeclared_symbols<I, S>(
+        path: &Path,
+        format: ReplayFormat,
+        symbols: I,
+    ) -> Result<Self, ReplayError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let symbols = SymbolTable::try_from_symbols(symbols)?;
+        Self::open_with_format_and_symbols(path, format, symbols)
     }
 
     pub fn open_with_format_and_symbols(
@@ -158,6 +173,15 @@ impl ReplayReader {
 impl MmapReplayReader {
     pub fn open(path: &Path) -> Result<Self, ReplayError> {
         Self::open_with_symbols(path, SymbolTable::new())
+    }
+
+    pub fn open_with_predeclared_symbols<I, S>(path: &Path, symbols: I) -> Result<Self, ReplayError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let symbols = SymbolTable::try_from_symbols(symbols)?;
+        Self::open_with_symbols(path, symbols)
     }
 
     pub fn open_with_symbols(path: &Path, symbols: SymbolTable) -> Result<Self, ReplayError> {
@@ -530,6 +554,66 @@ mod tests {
         let ids_first = read_symbols(&path)?;
         let ids_second = read_symbols(&path)?;
         assert_eq!(ids_first, ids_second);
+
+        Ok(())
+    }
+
+    #[test]
+    fn predeclared_symbols_override_first_seen_order() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("events.log");
+
+        let mut writer_symbols = SymbolTable::try_from_symbols(["ETH-USD", "BTC-USD"])?;
+        let eth = writer_symbols.try_intern("ETH-USD")?;
+        let btc = writer_symbols.try_intern("BTC-USD")?;
+
+        let events = [
+            MarketEvent::L2Delta {
+                ts_ns: 1,
+                symbol: eth,
+                updates: vec![LevelUpdate {
+                    side: Side::Ask,
+                    price: Price::new(200)?,
+                    qty: Qty::new(1)?,
+                }],
+            },
+            MarketEvent::L2Delta {
+                ts_ns: 2,
+                symbol: btc,
+                updates: vec![LevelUpdate {
+                    side: Side::Bid,
+                    price: Price::new(100)?,
+                    qty: Qty::new(1)?,
+                }],
+            },
+        ];
+
+        let mut file = File::create(&path)?;
+        for event in &events {
+            writeln!(
+                file,
+                "{}",
+                codec::encode_event_json_line(event, &writer_symbols)?
+            )?;
+        }
+
+        let mut reader = ReplayReader::open_with_format_and_predeclared_symbols(
+            &path,
+            ReplayFormat::Jsonl,
+            ["BTC-USD", "ETH-USD"],
+        )?;
+        let first = reader.next_event()?.expect("first event");
+        let second = reader.next_event()?.expect("second event");
+
+        let first_symbol = match first {
+            MarketEvent::L2Delta { symbol, .. } | MarketEvent::L2Snapshot { symbol, .. } => symbol,
+        };
+        let second_symbol = match second {
+            MarketEvent::L2Delta { symbol, .. } | MarketEvent::L2Snapshot { symbol, .. } => symbol,
+        };
+
+        assert_eq!(first_symbol, SymbolId::from_u32(1));
+        assert_eq!(second_symbol, SymbolId::from_u32(0));
 
         Ok(())
     }
