@@ -6,6 +6,8 @@ use thiserror::Error;
 
 use lob_core::{CoreError, MarketEvent, SymbolTable};
 
+const MAX_BIN_PAYLOAD_LEN: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Error)]
 pub enum ReplayError {
     #[error("io error: {0}")]
@@ -14,6 +16,8 @@ pub enum ReplayError {
     Core(#[from] CoreError),
     #[error("decode error: {0}")]
     Decode(#[from] codec::CodecError),
+    #[error("binary payload too large: {payload_len} bytes (max: {max})")]
+    BinaryPayloadTooLarge { payload_len: usize, max: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,13 +86,21 @@ impl ReplayReader {
     }
 
     fn next_event_json(&mut self) -> Result<Option<MarketEvent>, ReplayError> {
-        self.buffer.clear();
-        let bytes = self.reader.read_line(&mut self.buffer)?;
-        if bytes == 0 {
-            return Ok(None);
+        loop {
+            self.buffer.clear();
+            let bytes = self.reader.read_line(&mut self.buffer)?;
+            if bytes == 0 {
+                return Ok(None);
+            }
+
+            let line = self.buffer.trim_end_matches(['\n', '\r']);
+            if line.is_empty() {
+                continue;
+            }
+
+            let event = codec::decode_event_json_line(line, &mut self.symbols)?;
+            return Ok(Some(event));
         }
-        let event = codec::decode_event_json_line(&self.buffer, &mut self.symbols)?;
-        Ok(Some(event))
     }
 
     fn next_event_bin(&mut self) -> Result<Option<MarketEvent>, ReplayError> {
@@ -127,6 +139,7 @@ impl ReplayReader {
             }
 
             let header = codec::decode_event_bin_header(&header_buf)?;
+            ensure_payload_len(header.payload_len)?;
             let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
             self.bin_buf.resize(record_len, 0);
             self.bin_buf[..codec::BIN_RECORD_HEADER_LEN].copy_from_slice(&header_buf);
@@ -149,6 +162,7 @@ impl ReplayReader {
             Ok(Some(event))
         } else {
             let payload_len = u32::from_le_bytes(prefix_buf) as usize;
+            ensure_payload_len(payload_len)?;
             self.bin_buf.resize(payload_len, 0);
             let mut read = 0usize;
             while read < payload_len {
@@ -224,6 +238,7 @@ impl MmapReplayReader {
 
             let header_slice = &self.mmap[self.pos..self.pos + codec::BIN_RECORD_HEADER_LEN];
             let header = codec::decode_event_bin_header(header_slice)?;
+            ensure_payload_len(header.payload_len)?;
             let record_len = codec::BIN_RECORD_HEADER_LEN + header.payload_len;
             if self.mmap.len().saturating_sub(self.pos) < record_len {
                 return Err(std::io::Error::new(
@@ -239,6 +254,7 @@ impl MmapReplayReader {
             Ok(Some(event))
         } else {
             let payload_len = u32::from_le_bytes(prefix) as usize;
+            ensure_payload_len(payload_len)?;
             let record_len = 4 + payload_len;
             if self.mmap.len().saturating_sub(self.pos) < record_len {
                 return Err(std::io::Error::new(
@@ -253,6 +269,16 @@ impl MmapReplayReader {
             Ok(Some(event))
         }
     }
+}
+
+fn ensure_payload_len(payload_len: usize) -> Result<(), ReplayError> {
+    if payload_len > MAX_BIN_PAYLOAD_LEN {
+        return Err(ReplayError::BinaryPayloadTooLarge {
+            payload_len,
+            max: MAX_BIN_PAYLOAD_LEN,
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -311,6 +337,66 @@ mod tests {
         assert_eq!(reader.next_event()?, None);
         assert_eq!(reader.next_event()?, None);
 
+        Ok(())
+    }
+
+    #[test]
+    fn json_reader_skips_blank_lines() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("events-with-blanks.log");
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.try_intern("BTC-USD")?;
+
+        let event_one = MarketEvent::L2Delta {
+            ts_ns: 1,
+            symbol,
+            updates: vec![LevelUpdate {
+                side: Side::Bid,
+                price: Price::new(100)?,
+                qty: Qty::new(1)?,
+            }],
+        };
+        let event_two = MarketEvent::L2Delta {
+            ts_ns: 2,
+            symbol,
+            updates: vec![LevelUpdate {
+                side: Side::Ask,
+                price: Price::new(101)?,
+                qty: Qty::new(2)?,
+            }],
+        };
+
+        let mut file = File::create(&path)?;
+        writeln!(file)?;
+        writeln!(file, "{}", codec::encode_event_json_line(&event_one, &symbols)?)?;
+        writeln!(file)?;
+        writeln!(file, "{}", codec::encode_event_json_line(&event_two, &symbols)?)?;
+        writeln!(file)?;
+
+        let mut reader = ReplayReader::open(&path)?;
+        assert_eq!(reader.next_event()?.as_ref(), Some(&event_one));
+        assert_eq!(reader.next_event()?.as_ref(), Some(&event_two));
+        assert_eq!(reader.next_event()?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_bin_rejects_oversized_payload() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempdir()?;
+        let path = dir.path().join("oversized-legacy.bin");
+        let mut file = File::create(&path)?;
+        let payload_len = (MAX_BIN_PAYLOAD_LEN + 1) as u32;
+        file.write_all(&payload_len.to_le_bytes())?;
+
+        let mut reader = ReplayReader::open_with_format(&path, ReplayFormat::Bin)?;
+        let err = reader.next_event().unwrap_err();
+        assert!(matches!(
+            err,
+            ReplayError::BinaryPayloadTooLarge {
+                payload_len: len,
+                max,
+            } if len == (MAX_BIN_PAYLOAD_LEN + 1) && max == MAX_BIN_PAYLOAD_LEN
+        ));
         Ok(())
     }
 
