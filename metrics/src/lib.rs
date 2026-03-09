@@ -88,6 +88,15 @@ impl ThroughputTracker {
         self.count = 0;
         Some(rate)
     }
+
+    pub fn current_rate(&self) -> f64 {
+        let elapsed = self.window_start.elapsed().as_secs_f64();
+        if elapsed <= 0.0 {
+            0.0
+        } else {
+            self.count as f64 / elapsed
+        }
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +122,11 @@ mod tests {
         stats.record(10);
         stats.record(20);
         assert_eq!(stats.count(), 2);
+    }
+
+    #[test]
+    fn throughput_current_rate_is_zero_without_events() {
+        let tracker = ThroughputTracker::new(Duration::from_secs(10));
+        assert_eq!(tracker.current_rate(), 0.0);
     }
 }

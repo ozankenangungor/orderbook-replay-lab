@@ -216,7 +216,9 @@ fn run_replay(
 
     let elapsed = start.elapsed();
     // Windowed throughput uses the recent tracker window; overall is total applied / elapsed.
-    let throughput_windowed = throughput.events_per_sec().unwrap_or(0.0);
+    let throughput_windowed = throughput
+        .events_per_sec()
+        .unwrap_or_else(|| throughput.current_rate());
     let throughput_overall = if elapsed.as_secs_f64() > 0.0 {
         events_applied as f64 / elapsed.as_secs_f64()
     } else {
@@ -388,7 +390,9 @@ fn run_simulate(
     }
 
     let elapsed = start.elapsed();
-    let throughput_windowed = throughput.events_per_sec().unwrap_or(0.0);
+    let throughput_windowed = throughput
+        .events_per_sec()
+        .unwrap_or_else(|| throughput.current_rate());
     let throughput_overall = if elapsed.as_secs_f64() > 0.0 {
         events_applied as f64 / elapsed.as_secs_f64()
     } else {
