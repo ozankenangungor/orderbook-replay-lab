@@ -266,11 +266,17 @@ fn is_valid_transition(current: OrderState, next: OrderState) -> bool {
         ),
         OrderState::Live => matches!(
             next,
-            OrderState::Live | OrderState::PendingCancel | OrderState::Filled | OrderState::Canceled
+            OrderState::Live
+                | OrderState::PendingCancel
+                | OrderState::Filled
+                | OrderState::Canceled
         ),
         OrderState::PendingCancel => matches!(
             next,
-            OrderState::PendingCancel | OrderState::Live | OrderState::Filled | OrderState::Canceled
+            OrderState::PendingCancel
+                | OrderState::Live
+                | OrderState::Filled
+                | OrderState::Canceled
         ),
         OrderState::Canceled | OrderState::Filled | OrderState::Rejected => false,
     }
@@ -563,7 +569,10 @@ mod tests {
             0,
             3,
         ));
-        assert_eq!(oms.order_state(order.client_order_id), Some(OrderState::Live));
+        assert_eq!(
+            oms.order_state(order.client_order_id),
+            Some(OrderState::Live)
+        );
 
         oms.on_execution_report(&build_report(
             order.client_order_id,
@@ -573,7 +582,10 @@ mod tests {
             0,
             2,
         ));
-        assert_eq!(oms.order_state(order.client_order_id), Some(OrderState::Live));
+        assert_eq!(
+            oms.order_state(order.client_order_id),
+            Some(OrderState::Live)
+        );
         assert_eq!(oms.stale_report_count(), 1);
     }
 }

@@ -368,9 +368,17 @@ mod tests {
 
         let mut file = File::create(&path)?;
         writeln!(file)?;
-        writeln!(file, "{}", codec::encode_event_json_line(&event_one, &symbols)?)?;
+        writeln!(
+            file,
+            "{}",
+            codec::encode_event_json_line(&event_one, &symbols)?
+        )?;
         writeln!(file)?;
-        writeln!(file, "{}", codec::encode_event_json_line(&event_two, &symbols)?)?;
+        writeln!(
+            file,
+            "{}",
+            codec::encode_event_json_line(&event_two, &symbols)?
+        )?;
         writeln!(file)?;
 
         let mut reader = ReplayReader::open(&path)?;
