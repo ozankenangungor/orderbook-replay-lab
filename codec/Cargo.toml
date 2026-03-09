@@ -7,7 +7,7 @@ edition = "2021"
 lob_core = { package = "lob-core", path = "../core" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-serde = { workspace = true, optional = true }
+serde = { workspace = true }
 bincode = { workspace = true, optional = true }
 crc32fast = { workspace = true, optional = true }
 
@@ -15,7 +15,7 @@ crc32fast = { workspace = true, optional = true }
 criterion = { workspace = true }
 
 [features]
-bin = ["bincode", "serde", "crc32fast"]
+bin = ["bincode", "crc32fast"]
 
 [[bench]]
 name = "codec_bench"
