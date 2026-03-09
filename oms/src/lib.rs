@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use lob_core::{Price, Qty};
+use lob_core::{Price, Qty, Side, SymbolId};
 use trading_types::{
     ClientOrderId, ExecutionReport, Intent, OrderRequest as NewOrderRequest, OrderStatus, OrderType,
 };
@@ -43,6 +43,10 @@ pub enum OrderRequest {
 struct OrderEntry {
     state: OrderState,
     filled_qty: Qty,
+    symbol: SymbolId,
+    side: Side,
+    total_qty: Qty,
+    last_report_ts_ns: u64,
 }
 
 fn zero_qty() -> Qty {
@@ -57,6 +61,8 @@ pub struct Oms {
     orders: HashMap<ClientOrderId, OrderEntry>,
     open_orders_count: usize,
     orphan_reports: u64,
+    stale_reports: u64,
+    invalid_reports: u64,
 }
 
 impl Oms {
@@ -66,6 +72,8 @@ impl Oms {
             orders: HashMap::new(),
             open_orders_count: 0,
             orphan_reports: 0,
+            stale_reports: 0,
+            invalid_reports: 0,
         }
     }
 
@@ -95,6 +103,10 @@ impl Oms {
                     OrderEntry {
                         state: OrderState::PendingNew,
                         filled_qty: zero_qty(),
+                        symbol,
+                        side,
+                        total_qty: qty,
+                        last_report_ts_ns: 0,
                     },
                 );
                 self.open_orders_count = self.open_orders_count.saturating_add(1);
@@ -102,9 +114,10 @@ impl Oms {
             }
             Intent::Cancel { client_order_id } => {
                 if let Some(entry) = self.orders.get_mut(&client_order_id) {
-                    if !entry.state.is_terminal() {
-                        entry.state = OrderState::PendingCancel;
+                    if entry.state.is_terminal() {
+                        return None;
                     }
+                    entry.state = OrderState::PendingCancel;
                     return Some(OrderRequest::Cancel {
                         client_order_id,
                         ts_ns,
@@ -118,9 +131,15 @@ impl Oms {
                 new_qty,
             } => {
                 if let Some(entry) = self.orders.get_mut(&client_order_id) {
-                    if !entry.state.is_terminal() {
-                        entry.state = OrderState::PendingNew;
+                    if entry.state.is_terminal() {
+                        return None;
                     }
+                    entry.state = OrderState::PendingNew;
+                    entry.total_qty = if new_qty.lots() >= entry.filled_qty.lots() {
+                        new_qty
+                    } else {
+                        entry.filled_qty
+                    };
                     return Some(OrderRequest::Replace {
                         client_order_id,
                         new_price,
@@ -139,13 +158,27 @@ impl Oms {
             return;
         };
 
+        if report.ts_ns < entry.last_report_ts_ns {
+            self.stale_reports += 1;
+            return;
+        }
+        if report.symbol != entry.symbol || report.side != entry.side {
+            self.invalid_reports += 1;
+            return;
+        }
+
         let new_state = map_status(report.status);
         let report_qty = report.filled_qty.lots();
         let current_qty = entry.filled_qty.lots();
+        if report_qty > entry.total_qty.lots() {
+            self.invalid_reports += 1;
+            return;
+        }
 
         if report_qty < current_qty {
             // `filled_qty` is treated as cumulative per order. A lower value indicates a
             // stale/out-of-order report, so keep the last known max and ignore regression.
+            self.stale_reports += 1;
             return;
         }
         debug_assert!(
@@ -153,6 +186,11 @@ impl Oms {
             "execution report cumulative filled_qty regressed"
         );
         if report_qty == current_qty && entry.state == new_state {
+            entry.last_report_ts_ns = report.ts_ns;
+            return;
+        }
+        if !is_valid_transition(entry.state, new_state) {
+            self.invalid_reports += 1;
             return;
         }
 
@@ -166,6 +204,7 @@ impl Oms {
 
         entry.filled_qty = report.filled_qty;
         entry.state = new_state;
+        entry.last_report_ts_ns = report.ts_ns;
     }
 
     pub fn orphan_report_count(&self) -> u64 {
@@ -174,6 +213,14 @@ impl Oms {
 
     pub fn open_orders(&self) -> usize {
         self.open_orders_count
+    }
+
+    pub fn stale_report_count(&self) -> u64 {
+        self.stale_reports
+    }
+
+    pub fn invalid_report_count(&self) -> u64 {
+        self.invalid_reports
     }
 
     #[cfg(test)]
@@ -204,6 +251,28 @@ fn map_status(status: OrderStatus) -> OrderState {
         OrderStatus::Canceled | OrderStatus::Expired => OrderState::Canceled,
         OrderStatus::Filled => OrderState::Filled,
         OrderStatus::Rejected => OrderState::Rejected,
+    }
+}
+
+fn is_valid_transition(current: OrderState, next: OrderState) -> bool {
+    match current {
+        OrderState::PendingNew => matches!(
+            next,
+            OrderState::PendingNew
+                | OrderState::Live
+                | OrderState::Filled
+                | OrderState::Canceled
+                | OrderState::Rejected
+        ),
+        OrderState::Live => matches!(
+            next,
+            OrderState::Live | OrderState::PendingCancel | OrderState::Filled | OrderState::Canceled
+        ),
+        OrderState::PendingCancel => matches!(
+            next,
+            OrderState::PendingCancel | OrderState::Live | OrderState::Filled | OrderState::Canceled
+        ),
+        OrderState::Canceled | OrderState::Filled | OrderState::Rejected => false,
     }
 }
 
@@ -360,5 +429,151 @@ mod tests {
         assert_eq!(oms.order_state(id), Some(OrderState::Filled));
         assert_eq!(oms.filled_qty(id).unwrap().lots(), 3);
         assert_eq!(oms.open_orders(), 0);
+    }
+
+    #[test]
+    fn terminal_orders_do_not_reopen_on_late_live_reports() {
+        let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(4);
+        let intent = Intent::PlaceLimit {
+            symbol,
+            side: Side::Bid,
+            price: Price::new(100).unwrap(),
+            qty: Qty::new(2).unwrap(),
+            tif: TimeInForce::Gtc,
+            tag: None,
+        };
+        let request = oms.apply_intent(intent, 1).unwrap();
+        let OrderRequest::Place(order) = request else {
+            panic!("expected place request");
+        };
+        let id = order.client_order_id;
+
+        oms.on_execution_report(&build_report(
+            id,
+            symbol,
+            Side::Bid,
+            OrderStatus::Filled,
+            2,
+            2,
+        ));
+        assert_eq!(oms.order_state(id), Some(OrderState::Filled));
+        assert_eq!(oms.open_orders(), 0);
+
+        oms.on_execution_report(&build_report(
+            id,
+            symbol,
+            Side::Bid,
+            OrderStatus::Accepted,
+            2,
+            3,
+        ));
+        assert_eq!(oms.order_state(id), Some(OrderState::Filled));
+        assert_eq!(oms.open_orders(), 0);
+        assert_eq!(oms.invalid_report_count(), 1);
+    }
+
+    #[test]
+    fn mismatched_symbol_report_is_rejected() {
+        let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(5);
+        let other_symbol = SymbolId::from_u32(6);
+        let intent = Intent::PlaceLimit {
+            symbol,
+            side: Side::Ask,
+            price: Price::new(120).unwrap(),
+            qty: Qty::new(1).unwrap(),
+            tif: TimeInForce::Gtc,
+            tag: None,
+        };
+        let request = oms.apply_intent(intent, 1).unwrap();
+        let OrderRequest::Place(order) = request else {
+            panic!("expected place request");
+        };
+
+        oms.on_execution_report(&build_report(
+            order.client_order_id,
+            other_symbol,
+            Side::Ask,
+            OrderStatus::Accepted,
+            0,
+            2,
+        ));
+        assert_eq!(
+            oms.order_state(order.client_order_id),
+            Some(OrderState::PendingNew)
+        );
+        assert_eq!(oms.invalid_report_count(), 1);
+    }
+
+    #[test]
+    fn excessive_cumulative_fill_is_rejected() {
+        let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(7);
+        let intent = Intent::PlaceLimit {
+            symbol,
+            side: Side::Bid,
+            price: Price::new(50).unwrap(),
+            qty: Qty::new(2).unwrap(),
+            tif: TimeInForce::Gtc,
+            tag: None,
+        };
+        let request = oms.apply_intent(intent, 1).unwrap();
+        let OrderRequest::Place(order) = request else {
+            panic!("expected place request");
+        };
+
+        oms.on_execution_report(&build_report(
+            order.client_order_id,
+            symbol,
+            Side::Bid,
+            OrderStatus::PartiallyFilled,
+            3,
+            2,
+        ));
+        assert_eq!(
+            oms.order_state(order.client_order_id),
+            Some(OrderState::PendingNew)
+        );
+        assert_eq!(oms.invalid_report_count(), 1);
+    }
+
+    #[test]
+    fn stale_timestamp_report_is_ignored() {
+        let mut oms = Oms::new();
+        let symbol = SymbolId::from_u32(8);
+        let intent = Intent::PlaceLimit {
+            symbol,
+            side: Side::Ask,
+            price: Price::new(200).unwrap(),
+            qty: Qty::new(1).unwrap(),
+            tif: TimeInForce::Gtc,
+            tag: None,
+        };
+        let request = oms.apply_intent(intent, 1).unwrap();
+        let OrderRequest::Place(order) = request else {
+            panic!("expected place request");
+        };
+
+        oms.on_execution_report(&build_report(
+            order.client_order_id,
+            symbol,
+            Side::Ask,
+            OrderStatus::Accepted,
+            0,
+            3,
+        ));
+        assert_eq!(oms.order_state(order.client_order_id), Some(OrderState::Live));
+
+        oms.on_execution_report(&build_report(
+            order.client_order_id,
+            symbol,
+            Side::Ask,
+            OrderStatus::Accepted,
+            0,
+            2,
+        ));
+        assert_eq!(oms.order_state(order.client_order_id), Some(OrderState::Live));
+        assert_eq!(oms.stale_report_count(), 1);
     }
 }
