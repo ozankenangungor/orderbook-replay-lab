@@ -15,6 +15,12 @@ use venue::ExecutionVenue;
 
 const MAX_INTENT_STEPS: usize = 1024;
 
+struct PendingIntent {
+    ts_ns: u64,
+    symbol: SymbolId,
+    intent: Intent,
+}
+
 pub struct Engine {
     book: Rc<RefCell<OrderBook>>,
     portfolio: Portfolio,
@@ -23,7 +29,7 @@ pub struct Engine {
     strategy: Box<dyn Strategy>,
     venue: Box<dyn ExecutionVenue>,
     latency: LatencyStats,
-    intent_queue: VecDeque<Intent>,
+    intent_queue: VecDeque<PendingIntent>,
     intent_buffer: Vec<Intent>,
     report_buffer: Vec<ExecutionReport>,
 }
@@ -106,8 +112,8 @@ impl Engine {
 
         let ctx = self.build_context(ts_ns, symbol);
         self.strategy.on_market_event(&ctx, event, &mut intents);
-        queue.extend(intents.drain(..));
-        self.handle_intent_queue(ts_ns, symbol, &mut queue, &mut reports, &mut intents);
+        enqueue_intents(&mut queue, ts_ns, symbol, &mut intents);
+        self.handle_intent_queue(&mut queue, &mut reports, &mut intents);
 
         self.intent_queue = queue;
         self.intent_buffer = intents;
@@ -126,8 +132,8 @@ impl Engine {
 
         let ctx = self.build_context(ts_ns, symbol);
         self.strategy.on_timer(&ctx, &mut intents);
-        queue.extend(intents.drain(..));
-        self.handle_intent_queue(ts_ns, symbol, &mut queue, &mut reports, &mut intents);
+        enqueue_intents(&mut queue, ts_ns, symbol, &mut intents);
+        self.handle_intent_queue(&mut queue, &mut reports, &mut intents);
 
         self.intent_queue = queue;
         self.intent_buffer = intents;
@@ -136,15 +142,13 @@ impl Engine {
 
     fn handle_intent_queue(
         &mut self,
-        ts_ns: u64,
-        symbol: SymbolId,
-        queue: &mut VecDeque<Intent>,
+        queue: &mut VecDeque<PendingIntent>,
         reports: &mut Vec<ExecutionReport>,
         intents: &mut Vec<Intent>,
     ) {
         let mut processed_steps = 0usize;
 
-        while let Some(intent) = queue.pop_front() {
+        while let Some(pending) = queue.pop_front() {
             if processed_steps >= MAX_INTENT_STEPS {
                 debug_assert!(
                     false,
@@ -154,14 +158,14 @@ impl Engine {
             }
             processed_steps += 1;
 
-            let intent_ctx = self.build_context(ts_ns, symbol);
-            let decision = self.risk.evaluate(&intent_ctx, &intent);
+            let intent_ctx = self.build_context(pending.ts_ns, pending.symbol);
+            let decision = self.risk.evaluate(&intent_ctx, &pending.intent);
             let intent = match decision {
                 RiskAction::Allow(intent) | RiskAction::Transform(intent) => intent,
                 RiskAction::Reject { .. } => continue,
             };
 
-            let Some(request) = self.oms.apply_intent(intent, ts_ns) else {
+            let Some(request) = self.oms.apply_intent(intent, pending.ts_ns) else {
                 continue;
             };
             reports.clear();
@@ -173,7 +177,7 @@ impl Engine {
     fn process_reports(
         &mut self,
         reports: &mut Vec<ExecutionReport>,
-        queue: &mut VecDeque<Intent>,
+        queue: &mut VecDeque<PendingIntent>,
         intents: &mut Vec<Intent>,
     ) {
         for report in reports.drain(..) {
@@ -183,7 +187,7 @@ impl Engine {
             intents.clear();
             self.strategy
                 .on_execution_report(&report_ctx, &report, intents);
-            queue.extend(intents.drain(..));
+            enqueue_intents(queue, report.ts_ns, report.symbol, intents);
         }
     }
 
@@ -221,12 +225,27 @@ impl Engine {
     }
 }
 
+fn enqueue_intents(
+    queue: &mut VecDeque<PendingIntent>,
+    ts_ns: u64,
+    symbol: SymbolId,
+    intents: &mut Vec<Intent>,
+) {
+    queue.extend(intents.drain(..).map(|intent| PendingIntent {
+        ts_ns,
+        symbol,
+        intent,
+    }));
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     use super::*;
     use lob_core::{LevelUpdate, Price, Qty, Side};
+    use risk::RiskPolicy;
     use trading_types::{ClientOrderId, ExecutionReport, OrderStatus, TimeInForce};
 
     struct DummyStrategy {
@@ -577,6 +596,38 @@ mod tests {
         }
     }
 
+    struct FollowUpIntentContextPolicy {
+        eval_count: RefCell<u64>,
+        min_second_intent_ts_ns: u64,
+    }
+
+    impl FollowUpIntentContextPolicy {
+        fn new(min_second_intent_ts_ns: u64) -> Self {
+            Self {
+                eval_count: RefCell::new(0),
+                min_second_intent_ts_ns,
+            }
+        }
+    }
+
+    impl RiskPolicy for FollowUpIntentContextPolicy {
+        fn evaluate(&self, ctx: &ContextSnapshot, intent: &Intent) -> RiskAction {
+            if !matches!(intent, Intent::PlaceLimit { .. }) {
+                return RiskAction::Allow(intent.clone());
+            }
+
+            let mut eval_count = self.eval_count.borrow_mut();
+            *eval_count += 1;
+            if *eval_count > 1 && ctx.ts_ns < self.min_second_intent_ts_ns {
+                return RiskAction::Reject {
+                    reason: "follow-up intent context timestamp too old".to_string(),
+                };
+            }
+
+            RiskAction::Allow(intent.clone())
+        }
+    }
+
     #[test]
     fn snapshot_then_delta_triggers_fill_and_position() {
         let symbol = SymbolId::from_u32(1);
@@ -619,6 +670,29 @@ mod tests {
             Portfolio::new(),
             Oms::new(),
             RiskEngine::new(),
+            Box::new(ReactiveFollowUpStrategy::new()),
+            Box::new(DummyVenue),
+        );
+
+        let snapshot = MarketEvent::L2Snapshot {
+            ts_ns: 1,
+            symbol,
+            bids: vec![(Price::new(100).unwrap(), Qty::new(1).unwrap())],
+            asks: vec![(Price::new(101).unwrap(), Qty::new(1).unwrap())],
+        };
+        assert!(engine.on_market_event(&snapshot));
+        assert_eq!(engine.position_lots(symbol), 2);
+    }
+
+    #[test]
+    fn follow_up_intent_uses_execution_report_context() {
+        let symbol = SymbolId::from_u32(1);
+        let risk = RiskEngine::new().with_policy(FollowUpIntentContextPolicy::new(2));
+        let mut engine = Engine::new(
+            OrderBook::new(symbol),
+            Portfolio::new(),
+            Oms::new(),
+            risk,
             Box::new(ReactiveFollowUpStrategy::new()),
             Box::new(DummyVenue),
         );
