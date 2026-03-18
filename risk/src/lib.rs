@@ -63,25 +63,30 @@ impl MaxPositionPolicy {
 
 impl RiskPolicy for MaxPositionPolicy {
     fn evaluate(&self, ctx: &ContextSnapshot, intent: &Intent) -> RiskAction {
-        let limit = self.limit_lots.abs();
+        let limit = i128::from(self.limit_lots.unsigned_abs());
         if limit == 0 {
             return RiskAction::Reject {
                 reason: "position limit is zero".to_string(),
             };
         }
 
-        let (side, qty) = match intent {
-            Intent::PlaceLimit { side, qty, .. } => (*side, qty.lots()),
+        let projected_abs = match intent {
+            Intent::PlaceLimit { side, qty, .. } => {
+                let projected = if *side == Side::Bid {
+                    i128::from(ctx.position_lots) + i128::from(qty.lots())
+                } else {
+                    i128::from(ctx.position_lots) - i128::from(qty.lots())
+                };
+                projected.abs()
+            }
+            Intent::Replace { new_qty, .. } => {
+                // Replace does not carry side/symbol metadata today; enforce a conservative bound.
+                i128::from(ctx.position_lots).abs() + i128::from(new_qty.lots())
+            }
             _ => return RiskAction::Allow(intent.clone()),
         };
 
-        let projected = if side == Side::Bid {
-            ctx.position_lots + qty
-        } else {
-            ctx.position_lots - qty
-        };
-
-        if projected.abs() > limit {
+        if projected_abs > limit {
             return RiskAction::Reject {
                 reason: "max position exceeded".to_string(),
             };
@@ -106,6 +111,7 @@ impl RiskPolicy for PriceBandPolicy {
         let max_distance = self.max_distance_ticks.abs();
         let price = match intent {
             Intent::PlaceLimit { price, .. } => *price,
+            Intent::Replace { new_price, .. } => *new_price,
             _ => return RiskAction::Allow(intent.clone()),
         };
 
@@ -181,7 +187,7 @@ fn is_order_intent(intent: &Intent) -> bool {
 mod tests {
     use super::*;
     use lob_core::{Price, Qty, Side, SymbolId};
-    use trading_types::TimeInForce;
+    use trading_types::{ClientOrderId, TimeInForce};
 
     fn ctx_with_mid(ts_ns: u64, position_lots: i64) -> ContextSnapshot {
         let symbol = SymbolId::from_u32(1);
@@ -279,6 +285,36 @@ mod tests {
         assert!(matches!(
             policy.evaluate(&ctx_next, &intent),
             RiskAction::Allow(_)
+        ));
+    }
+
+    #[test]
+    fn max_position_rejects_replace_when_exposure_can_expand() {
+        let policy = MaxPositionPolicy::new(10);
+        let ctx = ctx_with_mid(1, 9);
+        let intent = Intent::Replace {
+            client_order_id: ClientOrderId(1),
+            new_price: Price::new(101).unwrap(),
+            new_qty: Qty::new(2).unwrap(),
+        };
+        assert!(matches!(
+            policy.evaluate(&ctx, &intent),
+            RiskAction::Reject { .. }
+        ));
+    }
+
+    #[test]
+    fn price_band_rejects_far_replace_price() {
+        let policy = PriceBandPolicy::new(3);
+        let ctx = ctx_with_mid(1, 0);
+        let intent = Intent::Replace {
+            client_order_id: ClientOrderId(2),
+            new_price: Price::new(200).unwrap(),
+            new_qty: Qty::new(1).unwrap(),
+        };
+        assert!(matches!(
+            policy.evaluate(&ctx, &intent),
+            RiskAction::Reject { .. }
         ));
     }
 }
